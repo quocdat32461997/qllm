@@ -1,0 +1,3 @@
+category: "All_Beauty"
+experiment_name: "quan_sft"
+mlflow_tracking_uri: "http://localhost:5000"
