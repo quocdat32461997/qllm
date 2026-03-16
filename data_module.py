@@ -6,18 +6,15 @@ from typing import Any
 from datasets import concatenate_datasets, load_dataset
 from torch.utils.data import Dataset
 
-
 PROMPT_TEMPLATES = (
-    "Please analyze the following product and its features: {product_text}. Then, generate semantic-IDs that meaningfully represent the product. The semantic-IDs are:",
-    "Analyze this catalog item and convert it into semantic-IDs: {product_text}. The semantic-IDs are:",
-    "Read the product information and map it to semantic-IDs for recommendation cold-start: {product_text}. The semantic-IDs are:",
-    "Remember the following product and summarize it as semantic-IDs: {product_text}. The semantic-IDs are:",
-    "Given the following product, produce semantic-IDs that capture its meaning: {product_text}. The semantic-IDs are:",
+    "Please analyze the following product and its features: {product_text}. Then, generate semantic-IDs that meaningfully represent the product. The semantic-IDs are: <bos_semantic_id>",
+    "Analyze this catalog item and convert it into semantic-IDs: {product_text}. The semantic-IDs are:  <bos_semantic_id>",
+    "Read the product information and map it to semantic-IDs for recommendation cold-start: {product_text}. The semantic-IDs are:  <bos_semantic_id>",
+    "Remember the following product and summarize it as semantic-IDs: {product_text}. The semantic-IDs are:  <bos_semantic_id>",
+    "Given the following product, produce semantic-IDs that capture its meaning: {product_text}. The semantic-IDs are:  <bos_semantic_id>",
 )
 
-RECONSTRUCTION_PROMPT_TEMPLATE = (
-    "########## The semantic-IDs are: {semantic_ids}. Recover the product name."
-)
+RECONSTRUCTION_PROMPT_TEMPLATE = "{input}. Recover the product name."
 
 
 def _stringify(value: Any) -> str:
@@ -81,6 +78,18 @@ def parse_semantic_ids(
     codebook_range: int,
     fallback_ids: list[int] | None = None,
 ) -> list[int]:
+    """Parse and normalize semantic ID values from generated text.
+
+    Args:
+        text: Generated text containing semantic ID numbers
+        codebook_size: Number of semantic IDs required
+        codebook_range: Maximum valid value for each semantic ID
+        fallback_ids: Optional fallback values if parsing fails
+
+    Returns:
+        List of exactly `codebook_size` semantic ID values, each in range
+        [1, codebook_range]
+    """
     values = [int(match) for match in re.findall(r"\d+", text)]
     if fallback_ids:
         values.extend(fallback_ids)
@@ -132,7 +141,7 @@ class AmazonSemanticIdDataset(Dataset):
         return {
             "guessing_prompt": prompt_template.format(product_text=product_text),
             "reconstruction_prompt_template": RECONSTRUCTION_PROMPT_TEMPLATE,
-            "reconstruction_target": product_name,
+            "reconstruction_target": product_text,
             "product_name": product_name,
             "product_features": product_features,
         }
