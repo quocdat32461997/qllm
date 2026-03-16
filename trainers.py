@@ -4,8 +4,8 @@ from typing import Any
 import torch
 from transformers import PreTrainedTokenizerBase, Trainer, TrainingArguments
 
+from constants import BOS_SEMANTIC_TOKEN, EOS_SEMANTIC_TOKEN
 from data_module import format_semantic_ids, parse_semantic_ids
-
 
 IGNORE_INDEX = -100
 
@@ -45,6 +45,15 @@ class QuanSFTTrainer(Trainer):
         self.tokenizer = tokenizer
         self.processing_class = tokenizer
 
+        # Add special tokens for semantic IDs
+        special_tokens = {
+            "bos_semantic_token": BOS_SEMANTIC_TOKEN,
+            "eos_semantic_token": EOS_SEMANTIC_TOKEN,
+        }
+        self.tokenizer.add_special_tokens(special_tokens)
+        self.bos_semantic_token_id = self.tokenizer.vocab[BOS_SEMANTIC_TOKEN]
+        self.eos_semantic_token_id = self.tokenizer.vocab[EOS_SEMANTIC_TOKEN]
+
     def compute_loss(
         self,
         model,
@@ -52,7 +61,14 @@ class QuanSFTTrainer(Trainer):
         return_outputs: bool = False,
         **_: Any,
     ):
-        semantic_ids, semantic_id_texts = self._generate_semantic_ids(
+
+        # Encoding: generate semantic IDs
+        (
+            encoder_generated_texts,
+            encoder_attention_mask_size,
+            semantic_ids,
+            semantic_id_texts,
+        ) = self._generate_semantic_ids(
             model=model,
             prompts=inputs["guessing_prompt"],
         )
@@ -65,15 +81,23 @@ class QuanSFTTrainer(Trainer):
             max_target_length=self.args.max_target_length,
         )
 
+        # Decoding: reconstruct original text from semantic IDs
         reconstruction_prompts = [
-            template.format(semantic_ids=semantic_id_text)
-            for template, semantic_id_text in zip(
-                inputs["reconstruction_prompt_template"], semantic_id_texts
+            template.format(input=generated_text)
+            for template, generated_text in zip(
+                inputs["reconstruction_prompt_template"],
+                encoder_generated_texts,
             )
         ]
-        reconstruction_loss = self._compute_autoregressive_loss(
+        reconstructed_texts, reconstructed_ids = self._reconstruct_input(
             model=model,
             prompts=reconstruction_prompts,
+            encoder_attention_mask_size=encoder_attention_mask_size,
+        )
+
+        reconstruction_loss = self._compute_autoregressive_loss(
+            model=model,
+            prompts=reconstructed_texts,
             targets=inputs["reconstruction_target"],
             max_prompt_length=self.args.max_source_length,
             max_target_length=self.args.max_target_length,
@@ -183,6 +207,51 @@ class QuanSFTTrainer(Trainer):
             "labels": torch.tensor(padded_labels, device=device),
         }
 
+    def _reconstruct_input(
+        self,
+        model,
+        prompts: list[str],
+        encoder_attention_mask_size: torch.Tensor,
+    ) -> tuple[list[list[int]], list[str]]:
+        device = next(model.parameters()).device
+        # This should:
+        # 1. Take generated semantic IDs and encoded input
+        # 2. Reconstruct the original text
+        # 3. Return reconstructed text and decoded IDs
+
+        # 1. Take generated semantic IDs and encoded input
+        encoded_prompts = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            padding_side="left",
+            truncation=True,
+            max_length=self.args.max_source_length,
+            add_special_tokens=False,
+            device=device,
+        )
+        # Masking encoder_prompt
+        encoded_prompts["attention_mask"][:, :encoder_attention_mask_size] = 0
+
+        # 2. Reconstruct the original text
+        generated = model.generate(
+            **encoded_prompts,
+            max_new_tokens=self.args.generation_max_new_tokens,
+            do_sample=self.args.generation_do_sample,
+            temperature=self.args.generation_temperature,
+            top_p=self.args.generation_top_p,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+
+        # 3. Return reconstructed text and reconstructed IDs
+        reconstructed_ids = generated[:, encoded_prompts["input_ids"].shape[1] :]
+        reconstructed_texts = self.tokenizer.batch_decode(
+            reconstructed_ids, skip_special_tokens=True
+        )
+
+        return reconstructed_texts, reconstructed_ids
+
     def _generate_semantic_ids(
         self,
         model,
@@ -192,57 +261,69 @@ class QuanSFTTrainer(Trainer):
         original_padding_side = self.tokenizer.padding_side
         self.tokenizer.padding_side = "left"
 
-        encoded = self.tokenizer(
+        encoded_prompts = self.tokenizer(
             prompts,
             return_tensors="pt",
             padding=True,
+            padding_side="left",
             truncation=True,
             max_length=self.args.max_source_length,
+            device=device,
         )
-        encoded = {key: value.to(device) for key, value in encoded.items()}
+        # encoded = {key: value.to(device) for key, value in encoded.items()}
 
-        was_training = model.training
-        model.eval()
-        with torch.no_grad():
-            generated = model.generate(
-                **encoded,
-                max_new_tokens=self.args.generation_max_new_tokens,
-                do_sample=self.args.generation_do_sample,
-                temperature=self.args.generation_temperature,
-                top_p=self.args.generation_top_p,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
+        # was_training = model.training
+        # model.eval()
+        # with torch.no_grad():
+        generated = model.generate(
+            **encoded_prompts,
+            max_new_tokens=self.args.codebook_size
+            + 1,  # codebook_size semantic IDs + 1 for eos_semantic_token
+            do_sample=self.args.generation_do_sample,
+            temperature=self.args.generation_temperature,
+            top_p=self.args.generation_top_p,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.eos_semantic_token_id,
+        )
 
-        if was_training:
-            model.train()
+        # if was_training:
+        #     model.train()
         self.tokenizer.padding_side = original_padding_side
 
-        continuation_ids = generated[:, encoded["input_ids"].shape[1] :]
-        continuation_texts = self.tokenizer.batch_decode(
-            continuation_ids, skip_special_tokens=True
+        semantic_ids = generated[:, encoded_prompts["input_ids"].shape[1] :]
+        semantic_id_texts = self.tokenizer.batch_decode(
+            semantic_ids, skip_special_tokens=True
+        )
+        generated_text = self.tokenizer.batch_decode(
+            generated,
+            skip_special_tokens=False,
         )
 
-        semantic_ids = []
-        semantic_id_texts = []
-        for generated_text, generated_token_ids in zip(
-            continuation_texts,
-            continuation_ids.tolist(),
-        ):
-            fallback_ids = [
-                (token_id % self.args.codebook_range) + 1
-                for token_id in generated_token_ids[: self.args.codebook_size]
-            ]
-            ids = parse_semantic_ids(
-                text=generated_text,
-                codebook_size=self.args.codebook_size,
-                codebook_range=self.args.codebook_range,
-                fallback_ids=fallback_ids,
-            )
-            semantic_ids.append(ids)
-            semantic_id_texts.append(format_semantic_ids(ids))
+        # semantic_ids = []
+        # semantic_id_texts = []
+        # for generated_text, generated_token_ids in zip(
+        #     semantic_id_texts,
+        #     semantic_ids.tolist(),
+        # ):
+        #     fallback_ids = [
+        #         (token_id % self.args.codebook_range) + 1
+        #         for token_id in generated_token_ids[: self.args.codebook_size]
+        #     ]
+        #     ids = parse_semantic_ids(
+        #         text=generated_text,
+        #         codebook_size=self.args.codebook_size,
+        #         codebook_range=self.args.codebook_range,
+        #         fallback_ids=fallback_ids,
+        #     )
+        #     semantic_ids.append(ids)
+        #     semantic_id_texts.append(format_semantic_ids(ids))
 
-        return semantic_ids, semantic_id_texts
+        return (
+            generated_text,
+            encoded_prompts["attention_mask"].shape[1],  # encoder_attention_mask_size
+            semantic_ids,
+            semantic_id_texts,
+        )
 
     def _compute_diversity_score(self, semantic_ids: list[list[int]]) -> float:
         if not semantic_ids:
@@ -255,4 +336,7 @@ class QuanSFTTrainer(Trainer):
         batch_diversity = len({tuple(example_ids) for example_ids in semantic_ids}) / (
             len(semantic_ids)
         )
-        return float((sum(per_example_diversity) / len(per_example_diversity) + batch_diversity) / 2.0)
+        return float(
+            (sum(per_example_diversity) / len(per_example_diversity) + batch_diversity)
+            / 2.0
+        )

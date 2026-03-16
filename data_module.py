@@ -6,12 +6,14 @@ from typing import Any
 from datasets import concatenate_datasets, load_dataset
 from torch.utils.data import Dataset
 
+from constants import BOS_SEMANTIC_TOKEN, EOS_SEMANTIC_TOKEN
+
 PROMPT_TEMPLATES = (
-    "Please analyze the following product and its features: {product_text}. Then, generate semantic-IDs that meaningfully represent the product. The semantic-IDs are: <bos_semantic_id>",
-    "Analyze this catalog item and convert it into semantic-IDs: {product_text}. The semantic-IDs are:  <bos_semantic_id>",
-    "Read the product information and map it to semantic-IDs for recommendation cold-start: {product_text}. The semantic-IDs are:  <bos_semantic_id>",
-    "Remember the following product and summarize it as semantic-IDs: {product_text}. The semantic-IDs are:  <bos_semantic_id>",
-    "Given the following product, produce semantic-IDs that capture its meaning: {product_text}. The semantic-IDs are:  <bos_semantic_id>",
+    f"Please analyze the following product and its features: {{product_text}}. Then, generate semantic-IDs that meaningfully represent the product. The semantic-IDs are: {BOS_SEMANTIC_TOKEN}",
+    f"Analyze this catalog item and convert it into semantic-IDs: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
+    f"Read the product information and map it to semantic-IDs for recommendation cold-start: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
+    f"Remember the following product and summarize it as semantic-IDs: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
+    f"Given the following product, produce semantic-IDs that capture its meaning: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
 )
 
 RECONSTRUCTION_PROMPT_TEMPLATE = "{input}. Recover the product name."
@@ -69,7 +71,7 @@ def build_product_text(
 
 def format_semantic_ids(ids: list[int]) -> str:
     encoded = ",".join(str(value) for value in ids)
-    return f"<semantic-id>{encoded}</semantic-id>"
+    return f"{BOS_SEMANTIC_TOKEN}{encoded}{EOS_SEMANTIC_TOKEN}"
 
 
 def parse_semantic_ids(
