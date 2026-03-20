@@ -16,7 +16,7 @@ PROMPT_TEMPLATES = (
     f"Given the following product, produce semantic-IDs that capture its meaning: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
 )
 
-RECONSTRUCTION_PROMPT_TEMPLATE = "{input}. Recover the product name."
+RECONSTRUCTION_PROMPT_TEMPLATE = f"The semantic-IDs are: {BOS_SEMANTIC_TOKEN} {{semantic_ids}} {EOS_SEMANTIC_TOKEN}. Recover the product name."
 
 
 def _stringify(value: Any) -> str:

@@ -6,7 +6,7 @@ import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from data_module import QuantDataCollator, build_amazon_datasets
-from trainers import QuantConfig, QuanSFTTrainer
+from trainers import QuanSFTTrainer, QuantConfig
 
 
 def _flatten_for_logging(
