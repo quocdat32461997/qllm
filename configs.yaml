@@ -4,9 +4,9 @@ model_name: "gpt2"
 
 categories:
   - "All_Beauty"
-  - "Office_Products"
-  - "Video_Games"
-  - "Pet_Supplies"
+  # - "Office_Products"
+  # - "Video_Games"
+  # - "Pet_Supplies"
 
 seed: 42
 eval_split_ratio: 0.02

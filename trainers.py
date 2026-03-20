@@ -339,7 +339,7 @@ class QuanSFTTrainer(Trainer):
             return_dict_in_generate=True,
         )
 
-        semantic_ids = generated.sequences[:, prompt_length:-]
+        semantic_ids = generated.sequences[:, prompt_length:-1]
         semantic_id_texts = self.tokenizer.batch_decode(
             semantic_ids, skip_special_tokens=True
         )
@@ -349,12 +349,12 @@ class QuanSFTTrainer(Trainer):
             # In our fomat:
             # - r_i equals to previous hidden_states
             # - e_i equals to embedding of semantic_ids
-            
+
             # Check if semantic_id_texts follow format pattern: comma-separated numbers up to codebook_size
             # Create regex pattern for comma-separated numbers within range and limit count to codebook_size
-            pattern = rf'^\s*(\d+\s*(,\s*\d+\s*){{0,{self.args.codebook_size-1}}})?\s*$'
+            pattern = rf"^\s*(\d+\s*(,\s*\d+\s*){{0,{self.args.codebook_size-1}}})?\s*$"
             valids = []
-            
+
             for text in semantic_id_texts:
                 # Allow empty string, single number, or up to codebook_size numbers
                 if not text.strip():  # Empty string is valid
@@ -363,15 +363,15 @@ class QuanSFTTrainer(Trainer):
                 elif not re.match(pattern, text):
                     valids.append(1e-2)
                     break
-                
+
                 # Additional check: verify numbers are within codebook_range
-                numbers = [int(num.strip()) for num in text.split(',') if num.strip()]
+                numbers = [int(num.strip()) for num in text.split(",") if num.strip()]
                 if any(num < 0 or num >= self.args.codebook_range for num in numbers):
                     valids.append(1e-2)
                     break
 
                 valids.append(1.0)
-            
+
             # Calculate semantic format loss
             hidden_states = generated.hidden_states[:, prompt_length:]
 
@@ -382,7 +382,11 @@ class QuanSFTTrainer(Trainer):
             format_loss = (hidden_states.detach() - embeddings).sum(dim=-1) + (
                 hidden_states - embeddings.detach()
             ).sum(dim=-1)
-            valids = torch.tensor(valids, device=format_loss.device, dtype=format_loss.dtype,)
+            valids = torch.tensor(
+                valids,
+                device=format_loss.device,
+                dtype=format_loss.dtype,
+            )
             format_loss = torch.div(format_loss, valids)
         else:
             format_loss = None
