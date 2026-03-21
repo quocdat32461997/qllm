@@ -1,6 +1,6 @@
 experiment_name: "quan_semantic_ids"
 mlflow_tracking_uri: "http://localhost:5000"
-model_name: "gpt2"
+model_name: "HuggingFaceTB/SmolLM-135M-Instruct"
 
 categories:
   - "All_Beauty"
@@ -10,16 +10,16 @@ categories:
 
 seed: 42
 eval_split_ratio: 0.02
-max_total_samples: 5000
-max_train_samples: 4096
-max_eval_samples: 256
+max_total_samples: null #5000
+max_train_samples: null #4096
+max_eval_samples: null #256
 
 codebook_size: 6
 codebook_range: 128
 feature_probability: 0.5
 max_source_length: 256
 max_target_length: 96
-generation_max_new_tokens: 24
+generation_max_new_tokens: 96
 generation_temperature: 1.0
 generation_top_p: 0.9
 guessing_weight: 1.0
@@ -29,11 +29,11 @@ trainer:
   output_dir: "outputs/semantic_ids"
   per_device_train_batch_size: 2
   per_device_eval_batch_size: 2
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 8
   learning_rate: 5.0e-5
   num_train_epochs: 1
   logging_steps: 10
-  save_steps: 100
+  save_steps: 1000
   eval_steps: 100
   warmup_ratio: 0.03
   weight_decay: 0.01

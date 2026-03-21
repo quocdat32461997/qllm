@@ -2,10 +2,10 @@ import argparse
 from collections.abc import Mapping
 
 import mlflow
-import wandb
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+import wandb
 from data_module import QuantDataCollator, build_amazon_datasets
 from trainers import QuanSFTTrainer, QuantConfig
 
@@ -41,6 +41,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
 
     model = AutoModelForCausalLM.from_pretrained(config["model_name"])
 
@@ -56,10 +57,10 @@ if __name__ == "__main__":
         eval_steps=config["trainer"]["eval_steps"],
         warmup_ratio=config["trainer"]["warmup_ratio"],
         weight_decay=config["trainer"]["weight_decay"],
-        eval_strategy="steps",
+        eval_strategy="no",
         save_strategy="steps",
         logging_strategy="steps",
-        report_to=config["trainer"].get("report_to", []),
+        report_to=config["trainer"].get("report_to", []) + ["wandb"],
         seed=config.get("seed", 42),
         codebook_size=config["codebook_size"],
         codebook_range=config["codebook_range"],

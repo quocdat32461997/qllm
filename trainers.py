@@ -86,14 +86,14 @@ class QuanSFTTrainer(Trainer):
 
         # Decoding: reconstruct original text from semantic IDs
         reconstruction_prompts = []
-        for (system_prompt, reconstruction_prompt), semantic_ids in zip(
+        for (system_prompt, reconstruction_prompt), _semantic_ids in zip(
             inputs["reconstruction_prompt_template"],
             semantic_id_texts,
         ):
             reconstruction_prompt["content"] = reconstruction_prompt[
                 "content"
             ].format(  # noqa
-                semantic_ids=semantic_ids
+                semantic_ids=_semantic_ids
             )
             reconstruction_prompts.append(
                 [system_prompt, reconstruction_prompt]
@@ -113,9 +113,13 @@ class QuanSFTTrainer(Trainer):
 
         self.log(
             {
-                "format_loss": format_loss.detach(),
-                "reconstruction_loss": reconstruction_loss.detach(),
-                "semantic_id_diversity": diversity_score,
+                "format_loss": format_loss.detach().item(),
+                "reconstruction_loss": reconstruction_loss.detach().item(),
+                "semantic_id_diversity": torch.tensor(
+                    diversity_score, device=next(model.parameters()).device
+                )
+                .detach()
+                .item(),
             }
         )
 
@@ -123,9 +127,14 @@ class QuanSFTTrainer(Trainer):
             return loss, {
                 "semantic_ids": semantic_ids,
                 "semantic_id_texts": semantic_id_texts,
-                "format_loss": format_loss.detach(),
-                "reconstruction_loss": reconstruction_loss.detach(),
-                "semantic_id_diversity": diversity_score,
+                "format_loss": format_loss.detach().item(),
+                "reconstruction_loss": reconstruction_loss.detach().item(),
+                "semantic_id_diversity": torch.tensor(
+                    diversity_score,
+                    device=next(model.parameters()).device,
+                )
+                .detach()
+                .item(),
             }
         return loss
 
@@ -279,7 +288,8 @@ class QuanSFTTrainer(Trainer):
 
             generated = model.generate(
                 **tokenized_prompts,
-                max_new_tokens=self.args.generation_max_new_tokens,
+                # max_new_tokens=self.args.generation_max_new_tokens,
+                max_length=self.args.max_target_length,
                 do_sample=self.args.generation_do_sample,
                 temperature=self.args.generation_temperature,
                 top_p=self.args.generation_top_p,
@@ -299,39 +309,43 @@ class QuanSFTTrainer(Trainer):
             padding_side="right",
             truncation=True,
             max_length=self.args.max_target_length,
-            device=device,
         )
         tokenized_labels = {k: v.to(device) for k, v in tokenized_labels.items()}
-        # Expand tokenized_labels to match the length of tokenized_prompts
-        tokenized_prompts["input_ids"] = torch.cat(
-            [
-                tokenized_prompts["input_ids"],
-                torch.full_like(
-                    tokenized_labels["input_ids"],
-                    self.tokenizer.pad_token_id,
-                    device=device,
-                ),
-            ],
-            dim=1,
-        )
-        tokenized_prompts["attention_mask"] = torch.cat(
-            [
-                tokenized_prompts["attention_mask"],
-                tokenized_labels["attention_mask"],
-            ],
-            dim=1,
-        )
-        tokenized_labels["input_ids"] = torch.cat(
-            [
-                torch.full((batch_size, seq_len), IGNORE_INDEX, device=device),
-                tokenized_labels["input_ids"],
-            ],
-            dim=-1,
-        )
 
-        return model(
-            **tokenized_prompts, labels=tokenized_labels["input_ids"]
-        ).loss  # noqa
+        # Create proper input structure for the model
+        reconstruction_inputs = {
+            "input_ids": torch.cat(
+                [
+                    tokenized_prompts["input_ids"],
+                    torch.full_like(
+                        tokenized_labels["input_ids"],
+                        self.tokenizer.pad_token_id,
+                        device=device,
+                    ),
+                ],
+                dim=1,
+            ),
+            "attention_mask": torch.cat(
+                [
+                    tokenized_prompts["attention_mask"],
+                    tokenized_labels["attention_mask"],
+                ],
+                dim=1,
+            ),
+            "labels": torch.cat(
+                [
+                    torch.full(
+                        (batch_size, seq_len),
+                        IGNORE_INDEX,
+                        device=device,
+                    ),
+                    tokenized_labels["input_ids"],
+                ],
+                dim=-1,
+            ),
+        }
+
+        return model(**reconstruction_inputs).loss
 
     def _generate_semantic_ids(
         self,
@@ -357,8 +371,9 @@ class QuanSFTTrainer(Trainer):
         # Generate semantic_ids
         generated = model.generate(
             **tokenized_prompts,
-            min_new_tokens=self.args.codebook_size + 1,
-            max_new_tokens=self.args.codebook_size * self.max_digit_num
+            min_new_tokens=self.args.codebook_size * 2
+            + 1,  # Consider <bos_semantic_token> and <eos_semantic_token>
+            max_new_tokens=self.args.codebook_size * (1 + self.max_digit_num)
             + 1,  # codebook_size semantic IDs + 1 for eos_semantic_token
             do_sample=self.args.generation_do_sample,
             temperature=self.args.generation_temperature,
@@ -415,20 +430,26 @@ class QuanSFTTrainer(Trainer):
                 dim=1,
             )  # [batch_size, num_output_tokens, hidden_size]
 
-            print("shape", hidden_states.shape)
             # Get semantic_ids only (not other tokens)
             embeddings = model.get_input_embeddings()(semantic_ids)
 
             # Stop gradients flows of embeddings
-            format_loss = (hidden_states.detach() - embeddings).sum(dim=-1) + (
-                hidden_states - embeddings.detach()
-            ).sum(dim=-1)
+            format_loss = torch.square(
+                hidden_states.detach() - embeddings
+            ) + torch.square(hidden_states - embeddings.detach())
+            format_loss = format_loss.sum(-1)
+
             valids = torch.tensor(
                 valids,
                 device=format_loss.device,
                 dtype=format_loss.dtype,
             )
-            format_loss = torch.div(format_loss.sum(-1), valids)
+            format_loss = torch.sqrt(
+                torch.div(
+                    format_loss.sum(-1),
+                    valids,
+                ).mean(-1)
+            )
         else:
             format_loss = None
 
@@ -439,7 +460,7 @@ class QuanSFTTrainer(Trainer):
         )
 
     def _compute_diversity_score(self, semantic_ids: list[list[int]]) -> float:
-        if not semantic_ids:
+        if semantic_ids is None:
             return 0.0
 
         per_example_diversity = [
