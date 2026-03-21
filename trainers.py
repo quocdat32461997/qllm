@@ -85,13 +85,20 @@ class QuanSFTTrainer(Trainer):
         )
 
         # Decoding: reconstruct original text from semantic IDs
-        reconstruction_prompts = [
-            template.format(semantic_ids=semantic_ids)
-            for template, semantic_ids in zip(
-                inputs["reconstruction_prompt_template"],
-                semantic_id_texts,
+        reconstruction_prompts = []
+        for (system_prompt, reconstruction_prompt), semantic_ids in zip(
+            inputs["reconstruction_prompt_template"],
+            semantic_id_texts,
+        ):
+            reconstruction_prompt["content"] = reconstruction_prompt[
+                "content"
+            ].format(  # noqa
+                semantic_ids=semantic_ids
             )
-        ]
+            reconstruction_prompts.append(
+                [system_prompt, reconstruction_prompt]
+            )  # noqa
+
         reconstruction_loss = self._reconstruct_input(
             model=model,
             prompts=reconstruction_prompts,
@@ -215,43 +222,57 @@ class QuanSFTTrainer(Trainer):
         # 3. Return reconstructed text and decoded IDs
 
         # 1. Take generated semantic IDs and encoded input
-        tokenized_prompts = self.tokenizer(
+        # Tokenize prompts and input
+        tokenized_prompts = self.tokenizer.apply_chat_template(
             prompts,
             return_tensors="pt",
             padding=True,
             padding_side="left",
+            tokenize=True,
             truncation=True,
             max_length=self.args.max_source_length,
             add_special_tokens=True,
-            device=device,
         )
+        tokenized_prompts = {
+            k: v.to(device) for k, v in tokenized_prompts.items()
+        }  # noqa
+        # tokenized_prompts = self.tokenizer(
+        #     prompts,
+        #     return_tensors="pt",
+        #     padding=True,
+        #     padding_side="left",
+        #     truncation=True,
+        #     max_length=self.args.max_source_length,
+        #     add_special_tokens=True,
+        #     device=device,
+        # )
 
         # Mask prompt portion (right side with left padding)
         batch_size, seq_len = tokenized_prompts["attention_mask"].shape
         # Mask the prompt portion (right side with left padding) until reaching
         # self.bos_semantic_token_id
-        is_bos = tokenized_prompts["input_ids"] == self.bos_semantic_token_id
+        # is_bos = tokenized_prompts["input_ids"] == self.bos_semantic_token_id
 
-        # Vectorized masking: mask everything up to and including the
-        # FIRST bos_semantic_token_id.
-        # cumsum(1) > 0 will be true for all positions at and after the
-        # first BOS. We want to mask (set to 0) positions BEFORE and AT
-        # the first BOS.
+        # # Vectorized masking: mask everything up to and including the
+        # # FIRST bos_semantic_token_id.
+        # # cumsum(1) > 0 will be true for all positions at and after the
+        # # first BOS. We want to mask (set to 0) positions BEFORE and AT
+        # # the first BOS.
 
-        # Get index of the first occurrence of bos_semantic_token_id.
-        # argmax returns the first index where the condition is true.
-        first_bos_indices = is_bos.long().argmax(dim=1)
-        has_bos = is_bos.any(dim=1)
+        # # Get index of the first occurrence of bos_semantic_token_id.
+        # # argmax returns the first index where the condition is true.
+        # first_bos_indices = is_bos.long().argmax(dim=1)
+        # has_bos = is_bos.any(dim=1)
 
-        range_tensor = torch.arange(
-            seq_len,
-            device=device,
-        ).expand(batch_size, seq_len)
-        # Mask where index <= first_bos_index for rows that have a BOS
-        mask_to_zero = (
-            range_tensor <= first_bos_indices.unsqueeze(1)
-        ) & has_bos.unsqueeze(1)
-        tokenized_prompts["attention_mask"][mask_to_zero] = 0
+        # range_tensor = torch.arange(
+        #     seq_len,
+        #     device=device,
+        # ).expand(batch_size, seq_len)
+        # # Mask where index <= first_bos_index for rows that have a BOS
+        # mask_to_zero = (
+        #     range_tensor <= first_bos_indices.unsqueeze(1)
+        # ) & has_bos.unsqueeze(1)
+        # tokenized_prompts["attention_mask"][mask_to_zero] = 0
 
         # 2. Reconstruct the original text
         if self.model.training is False:
@@ -280,17 +301,17 @@ class QuanSFTTrainer(Trainer):
             max_length=self.args.max_target_length,
             device=device,
         )
+        tokenized_labels = {k: v.to(device) for k, v in tokenized_labels.items()}
         # Expand tokenized_labels to match the length of tokenized_prompts
-        tokenized_labels["input_ids"] = torch.cat(
-            [
-                torch.full((batch_size, seq_len), IGNORE_INDEX, device=device),
-                tokenized_labels["input_ids"],
-            ],
-            dim=-1,
-        )
-
         tokenized_prompts["input_ids"] = torch.cat(
-            [tokenized_prompts["input_ids"], tokenized_labels["input_ids"]],
+            [
+                tokenized_prompts["input_ids"],
+                torch.full_like(
+                    tokenized_labels["input_ids"],
+                    self.tokenizer.pad_token_id,
+                    device=device,
+                ),
+            ],
             dim=1,
         )
         tokenized_prompts["attention_mask"] = torch.cat(
@@ -300,6 +321,14 @@ class QuanSFTTrainer(Trainer):
             ],
             dim=1,
         )
+        tokenized_labels["input_ids"] = torch.cat(
+            [
+                torch.full((batch_size, seq_len), IGNORE_INDEX, device=device),
+                tokenized_labels["input_ids"],
+            ],
+            dim=-1,
+        )
+
         return model(
             **tokenized_prompts, labels=tokenized_labels["input_ids"]
         ).loss  # noqa
@@ -312,15 +341,17 @@ class QuanSFTTrainer(Trainer):
         device = next(model.parameters()).device
 
         # Tokenize prompts and input
-        tokenized_prompts = self.tokenizer(
+        tokenized_prompts = self.tokenizer.apply_chat_template(
             prompts,
             return_tensors="pt",
             padding=True,
             padding_side="left",
+            tokenize=True,
             truncation=True,
             max_length=self.args.max_source_length,
-            device=device,
+            add_special_tokens=True,
         )
+        tokenized_prompts = {k: v.to(device) for k, v in tokenized_prompts.items()}
         prompt_length = tokenized_prompts["input_ids"].shape[1]
 
         # Generate semantic_ids
@@ -341,9 +372,14 @@ class QuanSFTTrainer(Trainer):
 
         semantic_ids = generated.sequences[:, prompt_length:-1]
         semantic_id_texts = self.tokenizer.batch_decode(
-            semantic_ids, skip_special_tokens=True
+            semantic_ids, skip_special_tokens=False
         )
-
+        text = self.tokenizer.batch_decode(
+            generated.sequences,
+            skip_special_tokens=False,
+        )
+        # '<|im_start|>system\nYou are a marketing analyst who specializes in product categorization and feature extraction. Semantic-IDs are {codebook_size} integers ranging from 0 to {codebook_range}, separated by commands, and placed between <|bos_semantic|> and <|eos_semantic|>.<|im_end|>\n<|im_start|>user\nGiven the following product, produce semantic-IDs that capture its meaning: Flamingo leaves Shower Cap Women Double Layer Waterproof Bath Cap Eva Lining Design For All Hair Lengths. The semantic-IDs are:  <|bos_semantic|><|im_end|>\n<|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|>\n```\n```\nAgency, in the following:\n```\n```\n\n<|eos_semantic|>'
+        # '<|im_start|>system\nYou are a marketing analyst who specializes in product categorization and feature extraction. Semantic-IDs are {codebook_size} integers ranging from 0 to {codebook_range}, separated by commands, and placed between <|bos_semantic|> and <|eos_semantic|>.<|im_end|>\n<|im_start|>user\nRemember the following product and summarize it as semantic-IDs: Satinique® Color Repair Conditioner 25.6oz. Features: {"Brand": "SATINIQUE", "Item Form": "Liquid", "Hair Type": "Color Treated", "Age Range (Description)": "Adult", "Unit Count": "25.6 fl oz", "Is Discontinued By Manufacturer": "No", "Package Dimensions": "8.1 x 3 x 3 inches; 0.32 Ounces", "Item model number": "SG_B00KJTZ6P6_US", "UPC": "796433603979 787461487907 149658650981"}.<|im_end|>\n<|im_start|>assistant\nWhat a fascinating product categorization! The following product and their associated semantic-<|eos_semantic|>'
         if self.model.training is True:
             # Following https://arxiv.org/abs/2305.05065
             # In our fomat:
@@ -357,24 +393,29 @@ class QuanSFTTrainer(Trainer):
 
             for text in semantic_id_texts:
                 # Allow empty string, single number, or up to codebook_size numbers
-                if not text.strip():  # Empty string is valid
-                    valids.append(1e-2)
+                if not text.strip() or not re.match(
+                    pattern, text
+                ):  # Empty string is valid
+                    valids.append(1e-1)
                     continue
-                elif not re.match(pattern, text):
-                    valids.append(1e-2)
-                    break
 
                 # Additional check: verify numbers are within codebook_range
                 numbers = [int(num.strip()) for num in text.split(",") if num.strip()]
                 if any(num < 0 or num >= self.args.codebook_range for num in numbers):
-                    valids.append(1e-2)
-                    break
+                    valids.append(1e-1)
+                    continue
 
                 valids.append(1.0)
-
             # Calculate semantic format loss
-            hidden_states = generated.hidden_states[:, prompt_length:]
+            hidden_states = torch.cat(
+                [
+                    hidden_states[-1]
+                    for hidden_states in generated.hidden_states[1:]  # noqa
+                ],
+                dim=1,
+            )  # [batch_size, num_output_tokens, hidden_size]
 
+            print("shape", hidden_states.shape)
             # Get semantic_ids only (not other tokens)
             embeddings = model.get_input_embeddings()(semantic_ids)
 
@@ -387,7 +428,7 @@ class QuanSFTTrainer(Trainer):
                 device=format_loss.device,
                 dtype=format_loss.dtype,
             )
-            format_loss = torch.div(format_loss, valids)
+            format_loss = torch.div(format_loss.sum(-1), valids)
         else:
             format_loss = None
 
