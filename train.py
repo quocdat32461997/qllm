@@ -2,6 +2,7 @@ import argparse
 from collections.abc import Mapping
 
 import mlflow
+import wandb
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -80,9 +81,17 @@ if __name__ == "__main__":
         data_collator=QuantDataCollator(),
     )
 
-    mlflow.set_tracking_uri(config["mlflow_tracking_uri"])
-    mlflow.set_experiment(config["experiment_name"])
+    # Initialize wandb
+    wandb.init(entity="quocdat32461997", project=config["experiment_name"])
+    try:
+        mlflow.set_tracking_uri(config["mlflow_tracking_uri"])
+        mlflow.set_experiment(config["experiment_name"])
 
-    with mlflow.start_run():
-        mlflow.log_params(_flatten_for_logging(config))
+        with mlflow.start_run():
+            mlflow.log_params(_flatten_for_logging(config))
+            trainer.train()
+    except Exception as e:
+        print(f"MLflow logging failed: {e}")
+        print("Continuing with wandb logging only...")
         trainer.train()
+        wandb.finish()
