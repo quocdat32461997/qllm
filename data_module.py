@@ -8,12 +8,18 @@ from torch.utils.data import Dataset
 
 from constants import BOS_SEMANTIC_TOKEN, EOS_SEMANTIC_TOKEN
 
+SYSTEM_PROMPT = (
+    "You are a marketing analyst who specializes in product categorization and feature extraction. "
+    "Semantic-IDs are {{codebook_size}} integers ranging from 0 to {{codebook_range}}, separated by commands, "
+    f"and placed between {BOS_SEMANTIC_TOKEN} and {EOS_SEMANTIC_TOKEN}."
+)
+
 PROMPT_TEMPLATES = (
-    f"Please analyze the following product and its features: {{product_text}}. Then, generate semantic-IDs that meaningfully represent the product. The semantic-IDs are: {BOS_SEMANTIC_TOKEN}",
-    f"Analyze this catalog item and convert it into semantic-IDs: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
-    f"Read the product information and map it to semantic-IDs for recommendation cold-start: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
-    f"Remember the following product and summarize it as semantic-IDs: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
-    f"Given the following product, produce semantic-IDs that capture its meaning: {{product_text}}. The semantic-IDs are:  {BOS_SEMANTIC_TOKEN}",
+    f"Please analyze the following product and its features: {{product_text}}. Then, generate semantic-IDs that meaningfully represent the product.",
+    f"Analyze this catalog item and convert it into semantic-IDs: {{product_text}}.",
+    f"Read the product information and map it to semantic-IDs for recommendation cold-start: {{product_text}}.",
+    f"Remember the following product and summarize it by generating semantic-IDs: {{product_text}}.",
+    f"Given the following product, produce semantic-IDs that capture its meaning: {{product_text}}.",
 )
 
 RECONSTRUCTION_PROMPT_TEMPLATE = f"The semantic-IDs are: {BOS_SEMANTIC_TOKEN} {{semantic_ids}} {EOS_SEMANTIC_TOKEN}. Recover the product name."
@@ -141,8 +147,29 @@ class AmazonSemanticIdDataset(Dataset):
         )
 
         return {
-            "guessing_prompt": prompt_template.format(product_text=product_text),
-            "reconstruction_prompt_template": RECONSTRUCTION_PROMPT_TEMPLATE,
+            "guessing_prompt": [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT.format(
+                        codebook_size=self.codebook_size,
+                        codebook_range=self.codebook_range,
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt_template.format(product_text=product_text),
+                },
+            ],
+            "reconstruction_prompt_template": [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT.format(
+                        codebook_size=self.codebook_size,
+                        codebook_range=self.codebook_range,
+                    ),
+                },
+                {"role": "user", "content": RECONSTRUCTION_PROMPT_TEMPLATE},
+            ],
             "reconstruction_target": product_text,
             "product_name": product_name,
             "product_features": product_features,
