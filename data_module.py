@@ -9,8 +9,8 @@ from torch.utils.data import Dataset
 from constants import BOS_SEMANTIC_TOKEN, EOS_SEMANTIC_TOKEN
 
 SYSTEM_PROMPT = (
-    "You are a marketing analyst who specializes in product categorization and feature extraction. "
-    "Semantic-IDs are {{codebook_size}} integers ranging from 0 to {{codebook_range}}, separated by commands, "
+    f"You are a marketing analyst who specializes in product categorization and feature extraction."
+    f"Semantic-IDs are {{codebook_size}} integers that each value ranges from 00 to {{codebook_range}}, separated by commands, "
     f"and placed between {BOS_SEMANTIC_TOKEN} and {EOS_SEMANTIC_TOKEN}."
 )
 
@@ -21,8 +21,10 @@ PROMPT_TEMPLATES = (
     f"Remember the following product and summarize it by generating semantic-IDs: {{product_text}}.",
     f"Given the following product, produce semantic-IDs that capture its meaning: {{product_text}}.",
 )
+ASSISTANT_PROMPT = f"The semantic-IDs are:"
 
-RECONSTRUCTION_PROMPT_TEMPLATE = f"The semantic-IDs are: {BOS_SEMANTIC_TOKEN} {{semantic_ids}} {EOS_SEMANTIC_TOKEN}. Recover the product name."
+RECONSTRUCTION_PROMPT_TEMPLATE = f"The semantic-IDs are: {{semantic_id_texts}}. Recover the product name and/or its metadata."
+RECONSTRUCTION_ASSISTANT_PROMPT = "The product name and/or its metadata are: "
 
 
 def _stringify(value: Any) -> str:
@@ -159,6 +161,10 @@ class AmazonSemanticIdDataset(Dataset):
                     "role": "user",
                     "content": prompt_template.format(product_text=product_text),
                 },
+                {
+                    "role": "assistant",
+                    "content": ASSISTANT_PROMPT,
+                },
             ],
             "reconstruction_prompt_template": [
                 {
@@ -169,8 +175,22 @@ class AmazonSemanticIdDataset(Dataset):
                     ),
                 },
                 {"role": "user", "content": RECONSTRUCTION_PROMPT_TEMPLATE},
+                {"role": "assistant", "content": RECONSTRUCTION_ASSISTANT_PROMPT},
             ],
-            "reconstruction_target": product_text,
+            "reconstruction_target": [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT.format(
+                        codebook_size=self.codebook_size,
+                        codebook_range=self.codebook_range,
+                    ),
+                },
+                {"role": "user", "content": RECONSTRUCTION_PROMPT_TEMPLATE},
+                {
+                    "role": "assistant",
+                    "content": f"{RECONSTRUCTION_ASSISTANT_PROMPT}{product_text}",
+                },
+            ],
             "product_name": product_name,
             "product_features": product_features,
         }
