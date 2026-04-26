@@ -10,7 +10,7 @@ from constants import BOS_SEMANTIC_TOKEN, EOS_SEMANTIC_TOKEN
 
 SYSTEM_PROMPT = (
     f"You are a marketing analyst who specializes in product categorization and feature extraction."
-    f"Semantic-IDs are {{codebook_size}} integers that each value ranges from 00 to {{codebook_range}}, separated by commands, "
+    f"Semantic-IDs are {{codebook_size}} integers that each value ranges from <|CODE_0|> to <|CODE_{{codebook_range}}|>, separated by commands, "
     f"and placed between {BOS_SEMANTIC_TOKEN} and {EOS_SEMANTIC_TOKEN}."
 )
 
@@ -21,10 +21,14 @@ PROMPT_TEMPLATES = (
     f"Remember the following product and summarize it by generating semantic-IDs: {{product_text}}.",
     f"Given the following product, produce semantic-IDs that capture its meaning: {{product_text}}.",
 )
-ASSISTANT_PROMPT = f"The semantic-IDs are:"
+ASSISTANT_PROMPT = (
+    f"The semantic-IDs are: {BOS_SEMANTIC_TOKEN} {{SEMANTIC_IDS}} {EOS_SEMANTIC_TOKEN}"
+)
 
-RECONSTRUCTION_PROMPT_TEMPLATE = f"The semantic-IDs are: {{semantic_id_texts}}. Recover the product name and/or its metadata."
-RECONSTRUCTION_ASSISTANT_PROMPT = "The product name and/or its metadata are: "
+RECONSTRUCTION_PROMPT_TEMPLATE = f"The semantic-IDs are: {BOS_SEMANTIC_TOKEN}{{SEMANTIC_IDS}}{EOS_SEMANTIC_TOKEN}. Recover the product name and/or its metadata."
+RECONSTRUCTION_ASSISTANT_PROMPT = (
+    f"The product name and/or its metadata are: {{product_text}}"
+)
 
 
 def _stringify(value: Any) -> str:
@@ -166,18 +170,7 @@ class AmazonSemanticIdDataset(Dataset):
                     "content": ASSISTANT_PROMPT,
                 },
             ],
-            "reconstruction_prompt_template": [
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT.format(
-                        codebook_size=self.codebook_size,
-                        codebook_range=self.codebook_range,
-                    ),
-                },
-                {"role": "user", "content": RECONSTRUCTION_PROMPT_TEMPLATE},
-                {"role": "assistant", "content": RECONSTRUCTION_ASSISTANT_PROMPT},
-            ],
-            "reconstruction_target": [
+            "reconstruction_prompt": [
                 {
                     "role": "system",
                     "content": SYSTEM_PROMPT.format(
@@ -188,7 +181,9 @@ class AmazonSemanticIdDataset(Dataset):
                 {"role": "user", "content": RECONSTRUCTION_PROMPT_TEMPLATE},
                 {
                     "role": "assistant",
-                    "content": f"{RECONSTRUCTION_ASSISTANT_PROMPT}{product_text}",
+                    "content": RECONSTRUCTION_ASSISTANT_PROMPT.format(
+                        product_text=product_text
+                    ),
                 },
             ],
             "product_name": product_name,
