@@ -101,30 +101,29 @@ class QuanSFTTrainer(Trainer):
                 model=model,
                 prompts=inputs["guessing_prompt"],
             )
+            # print("semantic id texts", encode_outputs["semantic_id_texts"])
 
             # Look at semantic IDs and reconstruct input
-            # reconstruction_loss = self._reconstruct_input(
-            #     model=model,
-            #     prompts=inputs["reconstruction_prompt"],
-            #     semantic_ids_texts=encode_outputs["semantic_id_texts"],
-            #     soft_embeddings=encode_outputs["soft_embeddings"],
-            # )
-            print("semantic id texts", encode_outputs["semantic_id_texts"])
+            reconstruction_loss = self._reconstruct_input(
+                model=model,
+                prompts=inputs["reconstruction_prompt"],
+                semantic_ids_texts=encode_outputs["semantic_id_texts"],
+                soft_embeddings=encode_outputs["soft_embeddings"],
+            )
 
             diversity_score = self._compute_diversity_score(
                 encode_outputs["semantic_ids"]
             )
             loss = (
-                self.args.guessing_weight
-                * encode_outputs["format_loss"]
-                # + self.args.reconstruction_weight * reconstruction_loss
+                self.args.guessing_weight * encode_outputs["format_loss"]
+                + self.args.reconstruction_weight * reconstruction_loss
             )
             # loss.backward()
 
         self.log(
             {
                 "format_loss": encode_outputs["format_loss"].detach().item(),
-                # "reconstruction_loss": reconstruction_loss.detach().item(),
+                "reconstruction_loss": reconstruction_loss.detach().item(),
                 "semantic_id_diversity": torch.tensor(
                     diversity_score, device=next(model.parameters()).device
                 )
@@ -138,7 +137,7 @@ class QuanSFTTrainer(Trainer):
                 "semantic_ids": encode_outputs["semantic_ids"],
                 "semantic_id_texts": encode_outputs["semantic_id_texts"],
                 "format_loss": encode_outputs["format_loss"].detach().item(),
-                # "reconstruction_loss": reconstruction_loss.detach().item(),
+                "reconstruction_loss": reconstruction_loss.detach().item(),
                 "semantic_id_diversity": torch.tensor(
                     diversity_score,
                     device=next(model.parameters()).device,
@@ -324,26 +323,35 @@ class QuanSFTTrainer(Trainer):
             .reshape(len(prompts), -1)
         )[:, -1:]
         semantic_ids_positions = (
-            torch.arange(
-                start=1,  # increase by 1 for 0-index
-                end=self.args.codebook_size + 1,
-                device=device,
-            ).repeat(len(prompts), 1)
-            + semantic_ids_positions
+            (
+                torch.arange(
+                    start=1,  # increase by 1 for 0-index
+                    end=self.args.codebook_size + 1,
+                    device=device,
+                ).repeat(len(prompts), 1)
+                + semantic_ids_positions
+            )  # currently [batch_size, codebook_size]
+            # expand to [batch_size, codebook_size, hidden_size]
+            .unsqueeze(-1).repeat(1, 1, soft_embeddings.shape[-1])
         )
 
         # Get embeddings of input_ids
         tokenized_prompts["inputs_embeds"] = model.get_input_embeddings()(
-            tokenized_prompts["input_ids"]
+            tokenized_prompts["input_ids"].clone()
         ).scatter_(
             1,
-            semantic_ids_positions.unsqueeze(-1).repeat(
-                1, 1, soft_embeddings.shape[-1]
-            ),
+            semantic_ids_positions,
             soft_embeddings,
         )
 
-        # Consider only t
+        # Consider only AI Message starting with last <|im_start|>
+        label_pointer = (tokenized_prompts["input_ids"] == 1).nonzero(  # 1 stands for
+            as_tuple=True
+        )[-1][
+            -1
+        ]  # noqa
+
+        tokenized_prompts["input_ids"][:, :label_pointer] = -100
 
         return model(
             inputs_embeds=tokenized_prompts["inputs_embeds"],
@@ -516,7 +524,7 @@ class QuanSFTTrainer(Trainer):
             add_special_tokens=True,
             eos_token_id=None,
         )
-        print("tokenized_prompts", tokenized_prompts, prompts)
+        # print("tokenized_prompts", tokenized_prompts, prompts)
         tokenized_prompts = {
             k: v.to(device) for k, v in tokenized_prompts.items()
         }  # noqa
@@ -620,7 +628,7 @@ class QuanSFTTrainer(Trainer):
 
             # Ignore semantic-ids in format loss
             # tokenized_prompts["labels"] = tokenized_prompts["input_ids"].clone()
-            print("semantic ids", semantic_id_texts)
+            # print("semantic ids", semantic_id_texts)
             tokenized_prompts["input_ids"][
                 :,
                 # Ignore prompt tokens that are redundant to recompute
