@@ -22,7 +22,7 @@ PROMPT_TEMPLATES = (
     f"Given the following product, produce semantic-IDs that capture its meaning: {{product_text}}.",
 )
 ASSISTANT_PROMPT = (
-    f"The semantic-IDs are: {BOS_SEMANTIC_TOKEN} {{SEMANTIC_IDS}} {EOS_SEMANTIC_TOKEN}"
+    f"The semantic-IDs are: {BOS_SEMANTIC_TOKEN}{{SEMANTIC_IDS}}{EOS_SEMANTIC_TOKEN}"
 )
 
 RECONSTRUCTION_PROMPT_TEMPLATE = f"The semantic-IDs are: {BOS_SEMANTIC_TOKEN}{{SEMANTIC_IDS}}{EOS_SEMANTIC_TOKEN}. Recover the product name and/or its metadata."
@@ -167,7 +167,9 @@ class AmazonSemanticIdDataset(Dataset):
                 },
                 {
                     "role": "assistant",
-                    "content": ASSISTANT_PROMPT,
+                    "content": ASSISTANT_PROMPT.format(
+                        SEMANTIC_IDS="".join([EOS_SEMANTIC_TOKEN] * self.codebook_size)
+                    ),
                 },
             ],
             "reconstruction_prompt": [
@@ -178,7 +180,12 @@ class AmazonSemanticIdDataset(Dataset):
                         codebook_range=self.codebook_range,
                     ),
                 },
-                {"role": "user", "content": RECONSTRUCTION_PROMPT_TEMPLATE},
+                {
+                    "role": "user",
+                    "content": RECONSTRUCTION_PROMPT_TEMPLATE.format(
+                        SEMANTIC_IDS="".join([EOS_SEMANTIC_TOKEN] * self.codebook_size)
+                    ),
+                },
                 {
                     "role": "assistant",
                     "content": RECONSTRUCTION_ASSISTANT_PROMPT.format(
