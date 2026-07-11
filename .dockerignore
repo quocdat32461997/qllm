@@ -1,0 +1,17 @@
+.git
+.gitignore
+.vscode
+outputs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+*.log

@@ -19,7 +19,7 @@ codebook_range: 99
 feature_probability: 0.5
 max_source_length: 256
 max_target_length: 96
-generation_max_new_tokens: 96
+generation_max_new_tokens: 256
 generation_temperature: 1.0
 generation_top_p: 0.9
 guessing_weight: 1.0
@@ -29,12 +29,25 @@ trainer:
   output_dir: "outputs/semantic_ids"
   per_device_train_batch_size: 2
   per_device_eval_batch_size: 2
-  gradient_accumulation_steps: 4
-  learning_rate: 5.0e-5
+  gradient_accumulation_steps: 2
+  learning_rate: 1.0e-4
   num_train_epochs: 1
   logging_steps: 1
   save_steps: 1000
   eval_steps: 100
-  warmup_ratio: 0.03
+  # warmup_ratio: 0.03
+  # warmup_steps: 200
   weight_decay: 0.01
+  max_grad_norm: 1.0
   report_to: []
+  temperature_initial: 0.6
+  temperature_final: 1.0e-10
+  gradient_checkpointing: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"

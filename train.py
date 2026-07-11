@@ -3,6 +3,7 @@ from collections.abc import Mapping
 
 import mlflow
 import yaml
+from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import wandb
@@ -45,6 +46,22 @@ if __name__ == "__main__":
 
     model = AutoModelForCausalLM.from_pretrained(config["model_name"])
 
+    # Apply LoRA if configured
+    # if "lora" in config:
+    #     lora_config = LoraConfig(
+    #         r=config["lora"]["r"],
+    #         lora_alpha=config["lora"]["lora_alpha"],
+    #         target_modules=config["lora"]["target_modules"],
+    #         lora_dropout=config["lora"]["lora_dropout"],
+    #         bias=config["lora"]["bias"],
+    #         task_type=config["lora"]["task_type"],
+    #     )
+    #     model = get_peft_model(model, lora_config)
+    #     model.print_trainable_parameters()
+
+    #     for param in model.get_input_embeddings().parameters():
+    #         param.requires_grad = False
+
     trainer_args = QuantConfig(
         output_dir=config["trainer"]["output_dir"],
         per_device_train_batch_size=config["trainer"]["per_device_train_batch_size"],
@@ -55,7 +72,8 @@ if __name__ == "__main__":
         logging_steps=config["trainer"]["logging_steps"],
         save_steps=config["trainer"]["save_steps"],
         eval_steps=config["trainer"]["eval_steps"],
-        warmup_ratio=config["trainer"]["warmup_ratio"],
+        # warmup_ratio=config["trainer"]["warmup_ratio"],
+        warmup_steps=config["trainer"].get("warmup_steps", 0),
         weight_decay=config["trainer"]["weight_decay"],
         eval_strategy="no",
         save_strategy="steps",
@@ -71,6 +89,10 @@ if __name__ == "__main__":
         generation_top_p=config.get("generation_top_p", 0.9),
         guessing_weight=config.get("guessing_weight", 1.0),
         reconstruction_weight=config.get("reconstruction_weight", 1.0),
+        max_grad_norm=config["trainer"].get("max_grad_norm", 1.0),
+        temperature_initial=config["trainer"].get("temperature_initial"),
+        temperature_final=config["trainer"].get("temperature_final"),
+        gradient_checkpointing=config["trainer"].get("gradient_checkpointing", False),
     )
 
     trainer = QuanSFTTrainer(
@@ -81,6 +103,14 @@ if __name__ == "__main__":
         eval_dataset=eval_dataset,
         data_collator=QuantDataCollator(),
     )
+
+    # Unfreeze codebook token embeddings when use with LoRA
+    # codebook_tokens = [f"<|CODE_{id}|>" for id in range(config["codebook_range"])]
+    # codebook_token_ids = [tokenizer.vocab[token] for token in codebook_tokens]
+    # # Unfreeze only codebook token embeddings
+    # trainer.model.get_input_embeddings().weight[
+    #     codebook_token_ids
+    # ].requires_grad = True  # noqa
 
     # Initialize wandb
     wandb.init(entity="quocdat32461997", project=config["experiment_name"])

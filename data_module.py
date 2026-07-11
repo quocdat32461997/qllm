@@ -150,7 +150,9 @@ class AmazonSemanticIdDataset(Dataset):
             product_name=product_name,
             product_features=product_features,
             include_features=include_features,
-        )
+        )[
+            :3000
+        ]  # Cap text at 3000 char(s)
 
         return {
             "guessing_prompt": [
@@ -244,8 +246,10 @@ def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
         "feature_probability": config.get("feature_probability", 0.5),
         "seed": config.get("seed", 42),
     }
-    train_records = [dict(row) for row in split_dataset["train"]]
-    eval_records = [dict(row) for row in split_dataset["test"]]
+    # train_records = [dict(row) for row in split_dataset["train"]]
+    # eval_records = [dict(row) for row in split_dataset["test"]]
+    train_records = split_dataset["train"]
+    eval_records = split_dataset["test"]
 
     train_limit = config.get("max_train_samples")
     if train_limit:
