@@ -205,10 +205,12 @@ class QuanSFTTrainer(Trainer):
                 .detach()
                 .item(),
             }
-        print(f"Allocated: {torch.mps.current_allocated_memory() / 1e6:.2f} MB")
+
         if torch.backends.mps.is_available():
+            print(f"Allocated: {torch.mps.current_allocated_memory() / 1e6:.2f} MB")
             torch.mps.empty_cache()
         if torch.cuda.is_available():
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1e6:.2f} MB")
             torch.cuda.empty_cache()
         return loss
 
