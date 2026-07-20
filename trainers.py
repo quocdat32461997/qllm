@@ -379,11 +379,7 @@ class QuanSFTTrainer(Trainer):
         self.log(
             {
                 "Number of procossed_tokens for reconstructing product-text": (
-                    tokenized_prompts["attention_mask"]
-                    .sum(dim=1)
-                    .float()
-                    .mean()
-                    .item()  # noqa
+                    tokenized_prompts["attention_mask"].sum(dim=1).float().mean().item()
                 )
             }
         )
@@ -630,11 +626,7 @@ class QuanSFTTrainer(Trainer):
         self.log(
             {
                 "Number of procossed_tokens for generating semantic-ids": (
-                    tokenized_prompts["attention_mask"]
-                    .sum(dim=1)
-                    .float()
-                    .mean()
-                    .item()  # noqa
+                    tokenized_prompts["attention_mask"].sum(dim=1).float().mean().item()
                 )
             }
         )
@@ -741,11 +733,14 @@ class QuanSFTTrainer(Trainer):
             )  # [batch_size, 1, codebook_size]
 
             # Hard forward
+            next_best_codebook_idx = torch.argmax(
+                codebook_logits, dim=-1
+            )  # [batch_size, 1]
             next_best_codebook = self.codebook_token_ids[
-                torch.argmax(codebook_logits, dim=-1)
+                next_best_codebook_idx
             ]  # [batch_size, 1]
             next_best_codebook_onehot = torch.nn.functional.one_hot(
-                next_best_codebook,
+                next_best_codebook_idx,
                 num_classes=len(self.codebook_token_ids),
             ).to(
                 dtype=codebook_logits.dtype,
@@ -764,7 +759,7 @@ class QuanSFTTrainer(Trainer):
             #     dtype=codebook_logits.dtype,
             # )  # [batch_size, 1, vocab_size]
 
-            # # Append selected tokens to input sequences
+            # Append selected tokens to input sequences
             tokenized_prompts["input_ids"][
                 :, codebook_idx : codebook_idx + 1  # noqa
             ] = next_best_codebook

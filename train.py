@@ -4,15 +4,12 @@ from collections.abc import Mapping
 
 import mlflow
 import yaml
-from huggingface_hub import login
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import wandb
 from data_module import QuantDataCollator, build_amazon_datasets
 from trainers import QuanSFTTrainer, QuantConfig
-
-login(token=os.getenv("HF_TOKEN"))
 
 
 def _flatten_for_logging(
