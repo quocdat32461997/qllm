@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.5.0-cuda12.4-cudnn9-runtime
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 # Set working directory
 WORKDIR /workspace
@@ -23,7 +23,6 @@ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 # Set environment variables
 ENV PYTHONPATH=/workspace
 ENV HF_HOME=/workspace/.cache/huggingface
-ENV WANDB_API_KEY=
 
 # Create cache directory
 RUN mkdir -p /workspace/.cache/huggingface
