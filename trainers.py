@@ -595,7 +595,7 @@ class QuanSFTTrainer(Trainer):
         # )  # TODO: Implement temperature scheduling
 
         progress = min(
-            (self.step_count // self.state.gradient_accumulation_steps)
+            (self.step_count // self.current_gradient_accumulation_steps)
             / self.state.max_steps,
             1.0,
         )
