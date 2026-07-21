@@ -108,7 +108,7 @@ class QuanSFTTrainer(Trainer):
         result = super().training_step(model, inputs, num_items_in_batch)
 
         # Log current learning rate
-        self.log({"learning_rate": self.optimizer.param_groups[0]["lr"]})
+        self.log({"lr": self.optimizer.param_groups[0]["lr"]})
 
         # Debug: Check LoRA gradients after backward pass
         # if self.step_count < 3:  # Only check first few steps
