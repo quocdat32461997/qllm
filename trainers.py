@@ -421,11 +421,19 @@ class QuanSFTTrainer(Trainer):
         )
 
         # Consider only AI Message starting with last <|im_start|>
-        label_pointer = (tokenized_prompts["input_ids"] == 1).nonzero(  # 1 stands for
+        matches = (tokenized_prompts["input_ids"] == 1).nonzero(  # 1 stands for
             as_tuple=True
-        )[-1][
-            -1
-        ]  # noqa
+        )[-1]
+        if matches.numel() == 0:
+            # Fallback: if no <|im_start|> found, use the BOS semantic token position
+            label_pointer = (
+                (tokenized_prompts["input_ids"] == self.bos_semantic_token_id)
+                .nonzero(as_tuple=True)[-1]
+                .max()
+                .item()
+            )
+        else:
+            label_pointer = matches[-1].item()
 
         tokenized_prompts["input_ids"][:, :label_pointer] = -100
 
