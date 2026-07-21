@@ -62,6 +62,13 @@ if __name__ == "__main__":
             for param in output_embeddings.parameters():
                 param.requires_grad = True
 
+    # Print trainable parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"Trainable %: {100 * trainable_params / total_params:.2f}%")
+
     trainer_args = QuantConfig(
         output_dir=config["trainer"]["output_dir"],
         per_device_train_batch_size=config["trainer"]["per_device_train_batch_size"],
