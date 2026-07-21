@@ -13,6 +13,7 @@ eval_split_ratio: 0.02
 max_total_samples: null #5000
 max_train_samples: null #4096
 max_eval_samples: null #256
+data_num_workers: 4
 
 codebook_size: 6
 codebook_range: 99

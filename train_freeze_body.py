@@ -102,6 +102,7 @@ if __name__ == "__main__":
         temperature_initial=config["trainer"].get("temperature_initial"),
         temperature_final=config["trainer"].get("temperature_final"),
         gradient_checkpointing=config["trainer"].get("gradient_checkpointing", False),
+        dataloader_num_workers=config.get("data_num_workers", 4),
     )
 
     trainer = QuanSFTTrainer(
