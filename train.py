@@ -116,7 +116,11 @@ if __name__ == "__main__":
     # ].requires_grad = True  # noqa
 
     # Initialize wandb
-    wandb.init(entity="quocdat32461997", project=config["experiment_name"])
+    wandb.init(
+        entity="quocdat32461997",
+        project=config["experiment_name"],
+        dir=config["trainer"]["output_dir"],
+    )
     try:
         mlflow.set_tracking_uri(config["mlflow_tracking_uri"])
         mlflow.set_experiment(config["experiment_name"])
