@@ -39,6 +39,7 @@ trainer:
   # warmup_ratio: 0.03
   # warmup_steps: 200
   weight_decay: 0.01
+  lr_scheduler_type: "cosine"  
   max_grad_norm: 1.0
   report_to: []
   temperature_initial: 0.6

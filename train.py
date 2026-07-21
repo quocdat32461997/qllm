@@ -69,6 +69,7 @@ if __name__ == "__main__":
         per_device_eval_batch_size=config["trainer"]["per_device_eval_batch_size"],
         gradient_accumulation_steps=config["trainer"]["gradient_accumulation_steps"],
         learning_rate=config["trainer"]["learning_rate"],
+        lr_scheduler_type=config["trainer"]["lr_scheduler_type"],
         num_train_epochs=config["trainer"]["num_train_epochs"],
         logging_steps=config["trainer"]["logging_steps"],
         save_steps=config["trainer"]["save_steps"],
