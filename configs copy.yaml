@@ -1,0 +1,55 @@
+experiment_name: "quan_semantic_ids"
+mlflow_tracking_uri: "http://localhost:5000"
+model_name: "Qwen/Qwen3-8B"
+
+categories:
+  - "All_Beauty"
+  # - "Office_Products"
+  # - "Video_Games"
+  # - "Pet_Supplies"
+
+seed: 42
+eval_split_ratio: 0.02
+max_total_samples: null #5000
+max_train_samples: null #4096
+max_eval_samples: null #256
+
+codebook_size: 6
+codebook_range: 99
+feature_probability: 0.5
+max_source_length: 1000
+max_target_length: 1000
+generation_max_new_tokens: 256
+generation_temperature: 1.0
+generation_top_p: 0.9
+guessing_weight: 1.0
+reconstruction_weight: 1.0
+
+trainer:
+  output_dir: "outputs/semantic_ids"
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-4
+  num_train_epochs: 1
+  logging_steps: 1
+  save_steps: 1000
+  save_total_limit: 1
+  eval_steps: 100
+  # warmup_ratio: 0.03
+  # warmup_steps: 200
+  weight_decay: 0.01
+  lr_scheduler_type: "cosine"  
+  max_grad_norm: 1.0
+  report_to: []
+  temperature_initial: 0.6
+  temperature_final: 1.0e-10
+  gradient_checkpointing: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
