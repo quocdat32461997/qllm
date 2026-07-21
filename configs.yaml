@@ -34,6 +34,7 @@ trainer:
   num_train_epochs: 1
   logging_steps: 1
   save_steps: 1000
+  save_total_limit: 1
   eval_steps: 100
   # warmup_ratio: 0.03
   # warmup_steps: 200
