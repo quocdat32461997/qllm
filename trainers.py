@@ -376,7 +376,7 @@ class QuanSFTTrainer(Trainer):
             truncation=True,
             tokenize=True,
             add_special_tokens=True,
-            # max_length=self.args.max_target_length,
+            max_length=self.args.max_target_length,
         )
         self.log(
             {
@@ -591,14 +591,18 @@ class QuanSFTTrainer(Trainer):
         #     logits, 1.0, dtype=logits.dtype
         # )  # TODO: Implement temperature scheduling
 
-        progress = min(self.step_count / self.state.max_steps, 1.0)
+        progress = min(
+            (self.step_count // self.state.gradient_accumulation_steps)
+            / self.state.max_steps,
+            1.0,
+        )
         current_temp = (
             self.args.temperature_initial * (1 - progress)
             + self.args.temperature_final * progress
         )
 
         # Log temperature
-        self.log({"temperature": current_temp})
+        self.log({"current_temperature": current_temp})
 
         return torch.full_like(logits, current_temp, dtype=logits.dtype)
 
@@ -621,7 +625,7 @@ class QuanSFTTrainer(Trainer):
             padding_side="left",
             tokenize=True,
             truncation=True,
-            # max_length=self.args.max_source_length,
+            max_length=self.args.max_source_length,
             add_special_tokens=True,
             eos_token_id=None,
         )

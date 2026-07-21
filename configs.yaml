@@ -17,8 +17,8 @@ max_eval_samples: null #256
 codebook_size: 6
 codebook_range: 99
 feature_probability: 0.5
-max_source_length: 256
-max_target_length: 96
+max_source_length: 1000
+max_target_length: 1000
 generation_max_new_tokens: 256
 generation_temperature: 1.0
 generation_top_p: 0.9
