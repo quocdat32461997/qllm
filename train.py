@@ -78,6 +78,7 @@ if __name__ == "__main__":
         weight_decay=config["trainer"]["weight_decay"],
         eval_strategy="no",
         save_strategy="steps",
+        save_total_limit=1,
         logging_strategy="steps",
         report_to=config["trainer"].get("report_to", []) + ["wandb"],
         seed=config.get("seed", 42),
