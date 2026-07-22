@@ -188,16 +188,14 @@ class QuanSFTTrainer(Trainer):
                 )
                 .detach()
                 .item(),
-                "guessing_prompt_avg_chars": torch.tensor(
+                "guessing_prompt_avg_chars": sum(
                     [len(prompt) for prompt in inputs["guessing_prompt"]]
                 )
-                .mean()
-                .item(),
-                "reconstruction_prompt_avg_chars": torch.tensor(
+                / len(inputs["guessing_prompt"]),
+                "reconstruction_prompt_avg_chars": sum(
                     [len(prompt) for prompt in inputs["reconstruction_prompt"]]
                 )
-                .mean()
-                .item(),
+                / len(inputs["reconstruction_prompt"]),
             }
         )
 
