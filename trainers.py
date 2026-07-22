@@ -104,6 +104,8 @@ class QuanSFTTrainer(Trainer):
             if token_id not in self.codebook_token_ids
         ]
 
+        self.im_start_token_id = self.tokenizer.vocab["<|im_start|>"]
+
     def training_step(self, model, inputs, num_items_in_batch=None):
         result = super().training_step(model, inputs, num_items_in_batch)
 
@@ -421,19 +423,11 @@ class QuanSFTTrainer(Trainer):
         )
 
         # Consider only AI Message starting with last <|im_start|>
-        matches = (tokenized_prompts["input_ids"] == 1).nonzero(  # 1 stands for
-            as_tuple=True
-        )[-1]
-        if matches.numel() == 0:
-            # Fallback: if no <|im_start|> found, use the BOS semantic token position
-            label_pointer = (
-                (tokenized_prompts["input_ids"] == self.bos_semantic_token_id)
-                .nonzero(as_tuple=True)[-1]
-                .max()
-                .item()
-            )
-        else:
-            label_pointer = matches[-1].item()
+        label_pointer = (
+            tokenized_prompts["input_ids"] == self.im_start_token_id
+        ).nonzero(as_tuple=True)[-1][
+            -1
+        ]  # noqa
 
         tokenized_prompts["input_ids"][:, :label_pointer] = -100
 
@@ -863,7 +857,7 @@ class QuanSFTTrainer(Trainer):
             # Ignore semantic-ids in format loss
             # Consider only AI Message starting with last
             label_pointer = (
-                tokenized_prompts["input_ids"] == 1
+                tokenized_prompts["input_ids"] == self.im_start_token_id
             ).nonzero(  # 1 stands for
                 as_tuple=True  # noqa
             )[
