@@ -56,7 +56,7 @@ def extract_product_name(example: dict[str, Any]) -> str:
     return "Unknown product"
 
 
-def extract_product_features(example: dict[str, Any]) -> str:
+def extract_product_features(example: dict[str, Any]) -> list[str]:
     feature_chunks = []
     for key in ("features", "description", "details", "categories"):
         value = _clean_text(_stringify(example.get(key)))
@@ -68,16 +68,27 @@ def extract_product_features(example: dict[str, Any]) -> str:
         if chunk not in seen:
             deduped.append(chunk)
             seen.add(chunk)
-    return " ".join(deduped)
+    # return " ".join(deduped)
+    return deduped
 
 
 def build_product_text(
     product_name: str,
     product_features: str,
     include_features: bool,
+    max_num_chars: int,
 ) -> str:
     if include_features and product_features:
-        return f"{product_name}. Features: {product_features}"
+        max_num_chars -= len(f"{product_name}. Features: ")
+
+        feature_idx = 0
+        while (
+            feature_idx < len(product_features)
+            and max_num_chars - len(product_features[feature_idx]) > 0
+        ):
+            max_num_chars -= len(product_features[feature_idx]) + 1  # +1 for space
+            feature_idx += 1
+        return f"""{product_name}. Features: {" ".join(product_features[:feature_idx])}"""  # noqa
     return product_name
 
 
@@ -124,6 +135,7 @@ class AmazonSemanticIdDataset(Dataset):
         records: list[dict[str, Any]],
         codebook_size: int,
         codebook_range: int,
+        max_num_chars: int,
         feature_probability: float = 0.5,
         seed: int = 42,
     ) -> None:
@@ -132,6 +144,7 @@ class AmazonSemanticIdDataset(Dataset):
         self.codebook_range = codebook_range
         self.feature_probability = feature_probability
         self.seed = seed
+        self.max_num_chars = max_num_chars
 
     def __len__(self) -> int:
         return len(self.records)
@@ -150,10 +163,8 @@ class AmazonSemanticIdDataset(Dataset):
             product_name=product_name,
             product_features=product_features,
             include_features=include_features,
-        )[
-            :3000
-        ]  # Cap text at 3000 char(s)
-
+            max_num_chars=self.max_num_chars,
+        )
         return {
             "guessing_prompt": [
                 {
@@ -245,6 +256,7 @@ def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
         "codebook_range": config["codebook_range"],
         "feature_probability": config.get("feature_probability", 0.5),
         "seed": config.get("seed", 42),
+        "max_num_chars": config.get("max_num_chars"),
     }
     # train_records = [dict(row) for row in split_dataset["train"]]
     # eval_records = [dict(row) for row in split_dataset["test"]]
@@ -255,7 +267,7 @@ def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
     if train_limit:
         train_records = train_records[:train_limit]
 
-    eval_limit = config.get("max_eval_samples")
+    eval_limit = config.get("max_eva, 1000l_samples")
     if eval_limit:
         eval_records = eval_records[:eval_limit]
 

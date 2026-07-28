@@ -15,6 +15,7 @@ max_train_samples: null #4096
 max_eval_samples: null #256
 data_num_workers: 4
 
+max_num_chars: 3000
 codebook_size: 6
 codebook_range: 99
 feature_probability: 0.5
