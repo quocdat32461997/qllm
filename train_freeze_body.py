@@ -2,6 +2,7 @@ import argparse
 import os
 from collections.abc import Mapping
 
+import bitsandbytes as bnb
 import mlflow
 import yaml
 from peft import LoraConfig, get_peft_model
@@ -46,6 +47,9 @@ if __name__ == "__main__":
     tokenizer.padding_side = "left"
 
     model = AutoModelForCausalLM.from_pretrained(config["model_name"])
+    optimizer = bnb.optim.AdamW8bit(
+        model.parameters(), lr=config["trainer"]["learning_rate"]
+    )
 
     # Freeze all model parameters except embeddings
     for param in model.parameters():
@@ -112,6 +116,7 @@ if __name__ == "__main__":
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=QuantDataCollator(),
+        optimizers=(optimizer, None),
     )
 
     # Unfreeze codebook token embeddings when use with LoRA
