@@ -274,6 +274,82 @@ class QuanSFTTrainer(Trainer):
 
         return encode_outputs["semantic_ids"]
 
+    @torch.no_grad()
+    def generate_semantic_ids(
+        self,
+        prompts: list,
+    ) -> tuple[torch.Tensor, list[str]]:
+        """
+        Public eval helper: generate semantic IDs for a batch of guessing
+        prompts. Returns the ``(batch_size, seq_len)`` code-token tensor and the
+        decoded semantic-ID strings.
+        """
+        self.model.eval()
+        outputs = self._generate_semantic_ids(model=self.model, prompts=prompts)
+        return outputs["semantic_ids"], outputs["semantic_id_texts"]
+
+    @torch.no_grad()
+    def reconstruct_from_semantic_ids(
+        self,
+        prompts: list,
+        semantic_ids: torch.Tensor,
+    ) -> list[str]:
+        """
+        Reconstruct product text from *generated* semantic IDs (Tier-3 eval).
+
+        Mirrors the training reconstruction path, but injects the hard code
+        token ids (instead of Gumbel soft embeddings) into the semantic-ID
+        placeholder slots of the reconstruction prompt, then autoregressively
+        decodes the product text. The reference assistant turn is dropped so the
+        model completes the answer itself.
+        """
+        self.model.eval()
+        device = next(self.model.parameters()).device
+
+        # Keep system + user turns only, add the generation prompt.
+        gen_prompts = [messages[:-1] for messages in prompts]
+        tokenized = self.tokenizer.apply_chat_template(
+            gen_prompts,
+            return_tensors="pt",
+            padding=True,
+            padding_side="left",
+            tokenize=True,
+            truncation=True,
+            max_length=self.args.max_target_length,
+            add_special_tokens=True,
+            add_generation_prompt=True,
+        )
+        tokenized = {k: v.to(device) for k, v in tokenized.items()}
+
+        # Replace the codebook_size placeholder tokens right after the last
+        # <bos_semantic> with the actual generated code token ids.
+        bos_positions = (
+            (tokenized["input_ids"] == self.bos_semantic_token_id)
+            .nonzero(as_tuple=True)[-1]
+            .reshape(len(gen_prompts), -1)
+        )[:, -1:]
+        positions = bos_positions + torch.arange(
+            start=1,
+            end=self.args.codebook_size + 1,
+            device=device,
+        ).repeat(len(gen_prompts), 1)  # [batch, codebook_size]
+        codes = semantic_ids[:, : self.args.codebook_size].to(device)
+        tokenized["input_ids"] = tokenized["input_ids"].scatter(1, positions, codes)
+
+        prompt_length = tokenized["input_ids"].shape[1]
+        generated = self.model.generate(
+            **tokenized,
+            max_new_tokens=self.args.generation_max_new_tokens,
+            do_sample=self.args.generation_do_sample,
+            temperature=self.args.generation_temperature,
+            top_p=self.args.generation_top_p,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+        return self.tokenizer.batch_decode(
+            generated[:, prompt_length:], skip_special_tokens=True
+        )
+
     def _reconstruct_input(
         self,
         model,
