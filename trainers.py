@@ -67,9 +67,7 @@ class QuanSFTTrainer(Trainer):
         self.tokenizer = tokenizer
         self.processing_class = tokenizer
         self.step_count = 0
-
-        # Debug: Check if max_grad_norm is set
-        print(f"max_grad_norm setting: {self.args.max_grad_norm}")
+        self._last_step = -1
 
         self.codebook_tokens = [
             f"<|CODE_{id}|>" for id in range(self.args.codebook_range)
@@ -98,19 +96,18 @@ class QuanSFTTrainer(Trainer):
             ]
         ).to(self.model.device)
 
-        self.bad_words_ids = [
-            [token_id]
-            for token_id in range(self.tokenizer.vocab_size)
-            if token_id not in self.codebook_token_ids
-        ]
-
         self.im_start_token_id = self.tokenizer.vocab["<|im_start|>"]
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         result = super().training_step(model, inputs, num_items_in_batch)
 
-        # Log current learning rate
-        self.log({"lr": self.optimizer.param_groups[0]["lr"]})
+        # Log current learning rate only once per step
+        current_step = (
+            self.step_count // self.current_gradient_accumulation_steps
+        )  # noqa
+        if current_step != self._last_step:
+            self.log({"lr": self.optimizer.param_groups[0]["lr"]})
+            self._last_step = current_step
 
         # Debug: Check LoRA gradients after backward pass
         # if self.step_count < 3:  # Only check first few steps
@@ -166,11 +163,16 @@ class QuanSFTTrainer(Trainer):
         reconstruction_loss = self._reconstruct_input(
             model=model,
             prompts=inputs["reconstruction_prompt"],
-            # semantic_ids_texts=encode_outputs["semantic_id_texts"],
             soft_embeddings=encode_outputs["soft_embeddings"],
         )
 
         diversity_score = self._compute_diversity_score(
+            encode_outputs["semantic_ids"],
+        )
+        perplexity_score = self._compute_codebook_perplexity(
+            encode_outputs["semantic_ids"],
+        )
+        per_position_perplexity = self._compute_per_position_perplexity(
             encode_outputs["semantic_ids"],
         )
         loss = (
@@ -178,16 +180,17 @@ class QuanSFTTrainer(Trainer):
             + self.args.reconstruction_weight * reconstruction_loss
         )
         # loss.backward()
-        print("Semantic id texts", encode_outputs["semantic_id_texts"])
+        # print("Semantic id texts", encode_outputs["semantic_id_texts"])
         self.log(
             {
                 "format_loss": encode_outputs["format_loss"].detach().item(),
                 "reconstruction_loss": reconstruction_loss.detach().item(),
-                "semantic_id_diversity": torch.tensor(
-                    diversity_score, device=next(model.parameters()).device
-                )
-                .detach()
-                .item(),
+                "semantic_id_diversity": diversity_score,
+                "semantic_id_perplexity": perplexity_score,
+                **{
+                    f"semantic_id_perplexity_pos_{pos}": ppl
+                    for pos, ppl in enumerate(per_position_perplexity)
+                },
                 "guessing_prompt_avg_chars": sum(
                     [len(prompt) for prompt in inputs["guessing_prompt"]]
                 )
@@ -208,15 +211,14 @@ class QuanSFTTrainer(Trainer):
         if return_outputs:
             return loss, {
                 "semantic_ids": encode_outputs["semantic_ids"],
-                "semantic_id_texts": encode_outputs["semantic_id_texts"],
                 "format_loss": encode_outputs["format_loss"].detach().item(),
                 "reconstruction_loss": reconstruction_loss.detach().item(),
-                "semantic_id_diversity": torch.tensor(
-                    diversity_score,
-                    device=next(model.parameters()).device,
-                )
-                .detach()
-                .item(),
+                "semantic_id_perplexity": perplexity_score,
+                "semantic_id_diversity": diversity_score,
+                **{
+                    f"semantic_id_perplexity_pos_{pos}": ppl
+                    for pos, ppl in enumerate(per_position_perplexity)
+                },
             }
 
         if torch.backends.mps.is_available():
@@ -227,113 +229,50 @@ class QuanSFTTrainer(Trainer):
             torch.cuda.empty_cache()
         return loss
 
-    # def _reconstruct_input(
-    #     self,
-    #     model,
-    #     prompts: list[str],
-    #     semantic_ids_texts: list[str],
-    #     soft_embeddings=None,
-    # ) -> tuple[list[list[int]], list[str]]:
-    #     device = next(model.parameters()).device
+    def prediction_step(
+        self,
+        model,
+        inputs: dict[str, list[str]],
+    ) -> torch.Tensor:
+        """
+        Generate semantic IDs at evaluation / prediction time.
 
-    #     for idx, semantic_ids_text in enumerate(semantic_ids_texts):
-    #         prompts[idx][1]["content"] = prompts[idx][1]["content"].format(
-    #             SEMANTIC_IDS=semantic_ids_text
-    #         )
+        Unlike ``compute_loss`` (which relies on the Gumbel-softmax
+        straight-through path to keep gradients flowing), this runs the model
+        under ``torch.no_grad`` and only emits the discrete semantic-ID tokens.
+        No soft embeddings, format loss, or reconstruction loss are produced.
 
-    #     # This should:
-    #     # 1. Take generated semantic IDs and encoded input
-    #     # 2. Reconstruct the original text
-    #     # 3. Return reconstructed text and decoded IDs
+        Returns the generated semantic-ID token ids of shape
+        ``(batch_size, seq_len)``.
+        """
+        with torch.no_grad():
+            encode_outputs = self._generate_semantic_ids(
+                model=model,
+                prompts=inputs["guessing_prompt"],
+            )
 
-    #     if self.model.training is False:
+        # Log codebook-utilization diagnostics over the eval batch.
+        self.log(
+            {
+                "eval_semantic_id_diversity": self._compute_diversity_score(
+                    encode_outputs["semantic_ids"]
+                ),
+                "eval_semantic_id_perplexity": self._compute_codebook_perplexity(
+                    encode_outputs["semantic_ids"]
+                ),
+                **{
+                    f"eval_semantic_id_perplexity_pos_{pos}": ppl
+                    for pos, ppl in enumerate(
+                        self._compute_per_position_perplexity(
+                            encode_outputs["semantic_ids"]
+                        )
+                    )
+                },
+            }
+        )
+        print("Eval semantic id texts", encode_outputs["semantic_id_texts"])
 
-    #         # Tokenize prompts and input
-    #         tokenized_prompts = self.tokenizer.apply_chat_template(
-    #             prompts,
-    #             return_tensors="pt",
-    #             padding=True,
-    #             padding_side="left",
-    #             tokenize=True,
-    #             truncation=True,
-    #             max_length=self.args.max_target_length,
-    #             add_special_tokens=True,
-    #         )
-    #         tokenized_prompts = {
-    #             k: v.to(device) for k, v in tokenized_prompts.items()
-    #         }  # noqa
-    #         prompt_length = tokenized_prompts["input_ids"].shape[1]
-    #         generated = model.generate(
-    #             **tokenized_prompts,
-    #             # max_new_tokens=self.args.generation_max_new_tokens,
-    #             max_length=self.args.max_target_length,
-    #             do_sample=self.args.generation_do_sample,
-    #             temperature=self.args.generation_temperature,
-    #             top_p=self.args.generation_top_p,
-    #             pad_token_id=self.tokenizer.pad_token_id,
-    #             eos_token_id=self.tokenizer.eos_token_id,
-    #         )
-
-    #         return self.tokenizer.batch_decode(
-    #             generated[:, prompt_length:], skip_special_tokens=True
-    #         )
-
-    #     # Calculate reconstruction loss
-    #     tokenized_prompts = self.tokenizer.apply_chat_template(
-    #         prompts,
-    #         return_tensors="pt",
-    #         padding=True,
-    #         padding_side="left",
-    #         truncation=True,
-    #         tokenize=True,
-    #         add_special_tokens=True,
-    #         # max_length=self.args.max_target_length,
-    #     )
-    #     tokenized_prompts = {
-    #         k: v.to(device) for k, v in tokenized_prompts.items()
-    #     }  # noqa
-
-    #     # Find indices of SEMANTIC IDS captured by BOS_TOKEN_ID and EOS_TOKEN_ID
-    #     semantic_ids_positions = (
-    #         (tokenized_prompts["input_ids"] == self.bos_semantic_token_id)
-    #         .nonzero(as_tuple=True)[-1]
-    #         .reshape(len(prompts), -1)
-    #     )[:, -1:]
-    #     semantic_ids_positions = (
-    #         torch.arange(
-    #             start=1,
-    #             end=self.args.codebook_size + 1,
-    #             device=device,
-    #         ).repeat(len(prompts), 1)
-    #         + semantic_ids_positions
-    #     )
-    #     # eos_indices = (
-    #     #     (tokenized_prompts["input_ids"] == self.eos_semantic_token_id)
-    #     #     .nonzero(as_tuple=True)[-1]
-    #     #     .reshape(len(prompts), -1)
-    #     # )[:, -1]
-
-    #     # Get embeddings of input_ids
-    #     tokenized_prompts["inputs_embeds"] = model.get_input_embeddings()(
-    #         tokenized_prompts["input_ids"]
-    #     ).scatter_(
-    #         1,
-    #         semantic_ids_positions.unsqueeze(-1).repeat(
-    #             1, 1, soft_embeddings.shape[-1]
-    #         ),
-    #         soft_embeddings,
-    #     )
-
-    #     # Replace embeddings from BOS_TOKEN_ID to EOS_TOKEN_ID
-    #     # tokenized_prompts["inputs_embeds"][
-    #     #     :, bos_indices + 1 : eos_indices
-    #     # ] = soft_embeddings  # noqa
-
-    #     return model(
-    #         inputs_embeds=tokenized_prompts["inputs_embeds"],
-    #         labels=tokenized_prompts["input_ids"],
-    #         attention_mask=tokenized_prompts["attention_mask"],
-    #     ).loss
+        return encode_outputs["semantic_ids"]
 
     def _reconstruct_input(
         self,
@@ -445,148 +384,6 @@ class QuanSFTTrainer(Trainer):
             attention_mask=tokenized_prompts["attention_mask"],
         ).loss
 
-    # def _generate_semantic_ids(
-    #     self,
-    #     model,
-    #     prompts: list[str],
-    # ) -> tuple[list[list[int]], list[str]]:
-    #     device = next(model.parameters()).device
-
-    #     # Tokenize prompts and input
-    #     tokenized_prompts = self.tokenizer.apply_chat_template(
-    #         prompts,
-    #         return_tensors="pt",
-    #         padding=True,
-    #         padding_side="left",
-    #         tokenize=True,
-    #         truncation=True,
-    #         max_length=self.args.max_source_length,
-    #         add_special_tokens=True,
-    #         eos_token_id=None,
-    #     )
-    #     tokenized_prompts = {k: v.to(device) for k, v in tokenized_prompts.items()}
-    #     bos_semantic_index = (
-    #         tokenized_prompts["input_ids"] == self.bos_semantic_token_id
-    #     ).nonzero(as_tuple=True)[-1][-1]
-    #     tokenized_prompts = {
-    #         k: v[:, : bos_semantic_index + 1]
-    #         for k, v in tokenized_prompts.items()  # noqa
-    #     }
-    #     generated = None
-    #     for _ in range(self.args.codebook_size):
-    #         generated = model(**tokenized_prompts)
-    #         next_best_codebooks = torch.argmax(
-    #             torch.nn.functional.softmax(
-    #                 generated.logits[:, -1:, self.codebook_token_ids], dim=-1
-    #             ),
-    #             dim=-1,
-    #         )
-    #         next_best_codebooks = self.codebook_token_ids[next_best_codebooks]
-
-    #         # Append selected tokens to input sequences
-    #         tokenized_prompts["input_ids"] = torch.cat(
-    #             [tokenized_prompts["input_ids"], next_best_codebooks],
-    #             dim=-1,
-    #         )
-    #         tokenized_prompts["attention_mask"] = torch.cat(
-    #             [
-    #                 tokenized_prompts["attention_mask"],
-    #                 torch.ones_like(next_best_codebooks),
-    #             ],
-    #             dim=-1,
-    #         )
-    #     del next_best_codebooks
-
-    #     # Gumbel-softmax straight-through estimator
-    #     semantic_ids = tokenized_prompts["input_ids"][
-    #         :, bos_semantic_index + 1 :
-    #     ]  # batch,  [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
-
-    #     semantic_id_texts = self.tokenizer.batch_decode(
-    #         semantic_ids,
-    #         skip_special_tokens=False,
-    #     )  # [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
-
-    #     if self.model.training is True:
-    #         # Gumbel-softmax straight-through estimator for embeddings
-    #         soft_embeddings = generated.logits[
-    #             :, bos_semantic_index:
-    #         ]  # [batch, output_tokens, vocab_size]
-
-    #         # convert semantic_ids to onehot
-    #         semantic_id_onehots = torch.nn.functional.one_hot(
-    #             semantic_ids,
-    #             num_classes=len(self.tokenizer),
-    #         )  # [batch, output_tokens, vocab_size]
-    #         # Differentiable selection of logits for semantic_ids
-    #         soft_embeddings = (
-    #             soft_embeddings * semantic_id_onehots
-    #         )  # [batch, output_tokens, vocab_size]
-    #         soft_embeddings = soft_embeddings.sum(
-    #             dim=-1, keepdim=True
-    #         )  # [batch, output_tokens, 1]
-    #         hard_embeddings = model.get_input_embeddings()(
-    #             semantic_ids
-    #         )  # [batch, output_tokens, hidden_size]
-    #         soft_embeddings = hard_embeddings + (
-    #             soft_embeddings - soft_embeddings.detach()
-    #         ).repeat(1, 1, hard_embeddings.shape[-1])
-    #         # soft_embeddings = hard_embeddings + (
-    #         #     soft_embeddings - soft_embeddings.detach()
-    #         # ).expand_as(
-    #         #     hard_embeddings
-    #         # )  # [batch, output_tokens, hidden_size]
-
-    #         # Format loss
-    #         prompts = [
-    #             (
-    #                 system_prompt,
-    #                 user_prompt,
-    #                 {
-    #                     k: v.format(SEMANTIC_IDS=semantic_id_text)
-    #                     for k, v in assistant_prompt.items()
-    #                 },
-    #             )
-    #             for semantic_id_text, (
-    #                 system_prompt,
-    #                 user_prompt,
-    #                 assistant_prompt,
-    #             ) in zip(semantic_id_texts, prompts)
-    #         ]
-    #         tokenized_prompts = self.tokenizer.apply_chat_template(
-    #             prompts,
-    #             return_tensors="pt",
-    #             padding=True,
-    #             padding_side="left",
-    #             tokenize=True,
-    #             truncation=True,
-    #             max_length=self.args.max_source_length,
-    #             add_special_tokens=True,
-    #             eos_token_id=None,
-    #         )
-    #         for k, v in tokenized_prompts.items():
-    #             tokenized_prompts[k] = v.to(device)
-    #         tokenized_prompts["labels"] = tokenized_prompts["input_ids"]
-    #         tokenized_prompts["labels"][
-    #             :,
-    #             bos_semantic_index
-    #             + 1 : bos_semantic_index
-    #             + 1
-    #             + self.args.codebook_size,
-    #         ] = -100  # Ignore semantic-ids in format loss
-
-    #         format_loss = model(**tokenized_prompts).loss
-    #     else:
-    #         format_loss = None
-    #         soft_embeddings = None
-
-    #     return {
-    #         "semantic_ids": semantic_ids,
-    #         "semantic_id_texts": semantic_id_texts,
-    #         "format_loss": format_loss,
-    #         "soft_embeddings": soft_embeddings,
-    #     }
-
     def _add_gumbel_noise(self, logits: torch.Tensor) -> torch.Tensor:
         """
         Add Gumbel noise to logits for diverse sampling.
@@ -600,13 +397,11 @@ class QuanSFTTrainer(Trainer):
         Temperature anneals from temperature_initial to temperature_final over
         the total training steps (max_steps).
         """
-        # return torch.full_like(
-        #     logits, 1.0, dtype=logits.dtype
-        # )  # TODO: Implement temperature scheduling
-
+        current_step = (
+            self.step_count // self.current_gradient_accumulation_steps
+        )  # noqa
         progress = min(
-            (self.step_count // self.current_gradient_accumulation_steps)
-            / self.state.max_steps,
+            current_step / self.state.max_steps,
             1.0,
         )
         current_temp = (
@@ -614,8 +409,10 @@ class QuanSFTTrainer(Trainer):
             + self.args.temperature_final * progress
         )
 
-        # Log temperature
-        self.log({"current_temperature": current_temp})
+        # Log temperature only once per step
+        if current_step != self._last_step:
+            self.log({"current_temperature": current_temp})
+            self._last_step = current_step
 
         return torch.full_like(logits, current_temp, dtype=logits.dtype)
 
@@ -669,71 +466,13 @@ class QuanSFTTrainer(Trainer):
             codebook_logits = model(
                 inputs_embeds=(
                     tokenized_prompts["inputs_embeds"][:, :codebook_idx]
-                    # if len(soft_embeddings) == 0
-                    # else torch.cat(
-                    #     [
-                    #         tokenized_prompts["inputs_embeds"][
-                    #             :, : bos_semantic_index + 1
-                    #         ],  # noqa
-                    #         torch.cat(soft_embeddings, dim=1),
-                    #     ],
-                    #     dim=1,
-                    # )
-                ),
+                ),  # noqa
                 attention_mask=tokenized_prompts["attention_mask"][
                     :, :codebook_idx
                 ],  # noqa
             ).logits[
                 :, -1:
             ]  # [batch_size, 1, vocab_size]
-
-            # Select best codebook
-            # next_best_codebook = torch.argmax(
-            #     torch.nn.functional.softmax(
-            #         codebook_logits[..., self.codebook_token_ids],
-            #         dim=-1,
-            #     ),
-            #     dim=-1,
-            # )  # [batch_size, 1]
-            # next_best_codebook = self.codebook_token_ids[
-            #     next_best_codebook
-            # ]  # [batch_size, 1]
-
-            # # Get full-vocab onehot vector
-            # next_best_codebook_onehot = torch.nn.functional.one_hot(
-            #     next_best_codebook,
-            #     num_classes=len(self.tokenizer),
-            # ).to(
-            #     dtype=codebook_logits.dtype,
-            # )  # [batch_size, 1, vocab_size]
-
-            # Append selected tokens to input sequences
-            # tokenized_prompts["input_ids"][
-            #     :, codebook_idx : codebook_idx + 1  # noqa
-            # ] = next_best_codebook
-
-            # Apply STE trick to allow gradient flow
-            # probs = (
-            #     codebook_logits  # [batch_size, 1, vocab_size]
-            #     * next_best_codebook_onehot  # [batch_size, 1, vocab_size]
-            #     / (codebook_logits.detach() + 1e-8)  # [batch_size, 1, vocab_size]
-            # )  # [batch_size, 1, vocab_size]
-
-            # # Debug: Check if gradients flow through STE
-            # if i == 1 and self.model.training:
-            #     print(
-            #         f"Codebook logits requires_grad: "
-            #         f"{codebook_logits.requires_grad}"
-            #     )
-            #     print(f"Probs requires_grad: {probs.requires_grad}")
-
-            # codebook_embeds = torch.matmul(
-            #     # matmul assigns weight to each vocab and sum up.
-            #     # Only vector of the selected vocab gets non-zero weight
-            #     probs,  # [batch_size, 1, vocab_size]
-            #     # codebook_logits,
-            #     model.get_input_embeddings().weight,  # [vocab_size, hidden_size]
-            # )  # [batch_size, 1, hidden_size]
 
             # ---------------
 
@@ -848,10 +587,10 @@ class QuanSFTTrainer(Trainer):
             :, bos_semantic_index + 1 :
         ]  # batch,  [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
 
-        semantic_id_texts = self.tokenizer.batch_decode(
-            semantic_ids,
-            skip_special_tokens=False,
-        )  # [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
+        # semantic_id_texts = self.tokenizer.batch_decode(
+        #     semantic_ids,
+        #     skip_special_tokens=False,
+        # )  # [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
 
         if self.model.training is True:
             soft_embeddings = tokenized_prompts["inputs_embeds"][
@@ -907,19 +646,112 @@ class QuanSFTTrainer(Trainer):
 
         return {
             "semantic_ids": semantic_ids,
-            "semantic_id_texts": semantic_id_texts,
+            # "semantic_id_texts": semantic_id_texts,
             "format_loss": format_loss,
             "soft_embeddings": soft_embeddings,
         }
 
     def _compute_diversity_score(self, semantic_ids: torch.Tensor) -> float:
+        """
+        Diversity score is to measure the codebook utilization.
+
+        Within a batch, count the number of unique codebooks are used.
+
+        Input:
+            semantic_ids: torch.Tensor of shape (batch_size, seq_len)
+        """
         if semantic_ids is None:
             return 0.0
 
-        per_example_diversity = torch.tensor(
-            [
-                len(set(example_ids)) / max(1, len(example_ids))
-                for example_ids in semantic_ids
-            ]
-        )
-        return torch.mean(per_example_diversity)
+        codebook_ids = self.codebook_token_ids.to(semantic_ids.device)
+
+        # Keep only tokens that belong to the codebook vocabulary, dropping any
+        # special/format tokens (e.g. <|eos_semantic|>) in the slice.
+        flat_ids = semantic_ids.reshape(-1)
+        flat_ids = flat_ids[torch.isin(flat_ids, codebook_ids)]
+        if flat_ids.numel() == 0:
+            return 0.0
+
+        # Fraction of the codebook that is used at least once.
+        num_unique = torch.unique(flat_ids).numel()
+        active_codebook_ratio = num_unique / self.args.codebook_range
+        return active_codebook_ratio
+
+    def _perplexity_from_ids(
+        self,
+        ids: torch.Tensor,
+        codebook_ids: torch.Tensor,
+    ) -> float:
+        """
+        Perplexity of the code-usage distribution for a set of token ids.
+
+            perplexity = exp(-sum_k p_k * log p_k)
+
+        where ``p_k`` is the empirical probability of codebook entry ``k``
+        being selected. Ranges from 1 (all mass on a single code) to
+        ``codebook_range`` (uniform usage).
+        """
+        # Keep only tokens that belong to the codebook vocabulary, dropping any
+        # special/format tokens (e.g. <|eos_semantic|>) in the slice.
+        ids = ids.reshape(-1)
+        ids = ids[torch.isin(ids, codebook_ids)]
+        if ids.numel() == 0:
+            return 0.0
+
+        # Empirical distribution over the codebook entries.
+        counts = torch.bincount(ids, minlength=int(codebook_ids.max().item()) + 1)
+        counts = counts[codebook_ids].float()  # [codebook_range]
+        probs = counts / counts.sum()
+
+        # Entropy over used entries only (0 * log 0 -> 0).
+        probs = probs[probs > 0]
+        entropy = -(probs * probs.log()).sum()
+        return entropy.exp().item()
+
+    def _compute_codebook_perplexity(self, semantic_ids: torch.Tensor) -> float:
+        """
+        Perplexity of codebook usage measures how evenly the codebook is
+        utilized across a batch, pooling all code positions together.
+
+        Perplexity ranges from 1 (the model collapses onto a single codebook)
+        to ``codebook_range`` (all entries used uniformly), so a higher value
+        indicates healthier codebook utilization.
+
+        Input:
+            semantic_ids: torch.Tensor of shape (batch_size, seq_len) holding
+                token ids drawn from ``self.codebook_token_ids``.
+        """
+        if semantic_ids is None:
+            return 0.0
+
+        codebook_ids = self.codebook_token_ids.to(semantic_ids.device)
+        return self._perplexity_from_ids(semantic_ids, codebook_ids)
+
+    def _compute_per_position_perplexity(
+        self,
+        semantic_ids: torch.Tensor,
+    ) -> list[float]:
+        """
+        Per-position codebook perplexity.
+
+        Each item's semantic ID is ``codebook_size`` codes, each drawn from the
+        shared ``codebook_range``-entry vocabulary. This computes perplexity
+        independently for every position, so a single position collapsing onto
+        a few codes is visible even when the pooled perplexity looks healthy.
+
+        Input:
+            semantic_ids: torch.Tensor of shape (batch_size, seq_len). Only the
+                first ``codebook_size`` columns are generated code positions.
+
+        Returns:
+            A list of ``codebook_size`` perplexities, one per position.
+        """
+        if semantic_ids is None:
+            return []
+
+        codebook_ids = self.codebook_token_ids.to(semantic_ids.device)
+        positions = semantic_ids[:, : self.args.codebook_size]
+        return [
+            self._perplexity_from_ids(positions[:, j], codebook_ids)
+            for j in range(positions.shape[1])
+        ]
