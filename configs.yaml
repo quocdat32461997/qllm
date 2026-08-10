@@ -15,7 +15,7 @@ max_train_samples: null #4096
 max_eval_samples: null #256
 data_num_workers: 4
 
-max_num_chars: 3000
+max_num_chars: 600
 codebook_size: 6
 codebook_range: 99
 feature_probability: 0.5
@@ -26,6 +26,10 @@ generation_temperature: 1.0
 generation_top_p: 0.9
 guessing_weight: 1.0
 reconstruction_weight: 1.0
+
+# Set true to train LoRA adapters (+ new codebook embeddings via
+# modules_to_save); false for full fine-tuning of all 8B params.
+use_lora: false
 
 trainer:
   output_dir: "outputs/semantic_ids"
@@ -41,14 +45,22 @@ trainer:
   # warmup_ratio: 0.03
   # warmup_steps: 200
   weight_decay: 0.01
-  lr_scheduler_type: "cosine"  
+  lr_scheduler_type: "cosine"
   max_grad_norm: 1.0
   report_to: []
   temperature_initial: 0.6
   temperature_final: 1.0e-10
-  gradient_checkpointing: false
+  # --- Memory / distributed ---
+  bf16: true                        # half the resident weight footprint
+  gradient_checkpointing: true      # trade compute for activation memory
+  attn_implementation: "sdpa"       # memory-efficient attention (no extra dep)
+  # DeepSpeed ZeRO memory sharding. zero2.json is the safe default for the
+  # custom multi-forward compute_loss (params stay whole per rank). Use
+  # zero3.json only for full fine-tuning that still OOMs (see caveat in notes).
+  deepspeed: "ds_configs/zero2.json"
 
 lora:
+  modules_to_save: ["embed_tokens", "lm_head"]
   r: 8
   lora_alpha: 16
   target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]

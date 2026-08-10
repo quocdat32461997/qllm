@@ -2,12 +2,17 @@ import argparse
 import os
 from collections.abc import Mapping
 
-import mlflow
+import torch
 import yaml
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import wandb
+from constants import (
+    BOS_SEMANTIC_SESSION,
+    BOS_SEMANTIC_TOKEN,
+    EOS_SEMANTIC_TOKEN,
+)
 from data_module import QuantDataCollator, build_amazon_datasets
 from trainers import QuanSFTTrainer, QuantConfig
 
@@ -45,23 +50,50 @@ if __name__ == "__main__":
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    model = AutoModelForCausalLM.from_pretrained(config["model_name"])
+    # Under DeepSpeed/FSDP the Trainer manages device placement, so do NOT pass
+    # device_map here. bf16 halves the resident weight footprint vs fp32.
+    trainer_cfg = config["trainer"]
+    torch_dtype = torch.bfloat16 if trainer_cfg.get("bf16", False) else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(
+        config["model_name"],
+        torch_dtype=torch_dtype,
+        attn_implementation=trainer_cfg.get("attn_implementation", "sdpa"),
+    )
 
-    # Apply LoRA if configured
-    # if "lora" in config:
-    #     lora_config = LoraConfig(
-    #         r=config["lora"]["r"],
-    #         lora_alpha=config["lora"]["lora_alpha"],
-    #         target_modules=config["lora"]["target_modules"],
-    #         lora_dropout=config["lora"]["lora_dropout"],
-    #         bias=config["lora"]["bias"],
-    #         task_type=config["lora"]["task_type"],
-    #     )
-    #     model = get_peft_model(model, lora_config)
-    #     model.print_trainable_parameters()
+    # Add the semantic-ID special tokens and resize the embedding table BEFORE
+    # wrapping with LoRA, so the newly added codebook rows are the ones captured
+    # by `modules_to_save` and actually get trained. (QuanSFTTrainer re-adds them
+    # idempotently, so this stays a no-op there.)
+    codebook_tokens = [f"<|CODE_{i}|>" for i in range(config["codebook_range"])]
+    tokenizer.add_special_tokens(
+        {
+            "extra_special_tokens": [
+                BOS_SEMANTIC_TOKEN,
+                EOS_SEMANTIC_TOKEN,
+                BOS_SEMANTIC_SESSION,
+            ]
+            + codebook_tokens
+        }
+    )
+    model.resize_token_embeddings(len(tokenizer))
 
-    #     for param in model.get_input_embeddings().parameters():
-    #         param.requires_grad = False
+    # Apply LoRA if configured. `modules_to_save` keeps the (resized) input
+    # embeddings and lm_head fully trainable so the new codebook tokens can be
+    # learned even though the rest of the backbone is frozen behind adapters.
+    if config.get("use_lora") and "lora" in config:
+        lora_config = LoraConfig(
+            r=config["lora"]["r"],
+            lora_alpha=config["lora"]["lora_alpha"],
+            target_modules=config["lora"]["target_modules"],
+            lora_dropout=config["lora"]["lora_dropout"],
+            bias=config["lora"]["bias"],
+            task_type=config["lora"]["task_type"],
+            modules_to_save=config["lora"].get(
+                "modules_to_save", ["embed_tokens", "lm_head"]
+            ),
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
 
     trainer_args = QuantConfig(
         output_dir=config["trainer"]["output_dir"],
@@ -96,6 +128,16 @@ if __name__ == "__main__":
         temperature_initial=config["trainer"].get("temperature_initial"),
         temperature_final=config["trainer"].get("temperature_final"),
         gradient_checkpointing=config["trainer"].get("gradient_checkpointing", False),
+        # use_reentrant=False is required for our multi-forward compute_loss:
+        # the codebook loop builds a graph across several sub-forwards.
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        bf16=config["trainer"].get("bf16", False),
+        # Path to a DeepSpeed ZeRO json (e.g. ds_configs/zero2.json) enables
+        # memory sharding across GPUs; None falls back to plain single/DDP.
+        deepspeed=config["trainer"].get("deepspeed"),
+        ddp_find_unused_parameters=config["trainer"].get(
+            "ddp_find_unused_parameters", False
+        ),
         dataloader_num_workers=config.get("data_num_workers", 4),
     )
 
@@ -116,21 +158,19 @@ if __name__ == "__main__":
     #     codebook_token_ids
     # ].requires_grad = True  # noqa
 
-    # Initialize wandb
-    wandb.init(
-        entity="quocdat32461997",
-        project=config["experiment_name"],
-        dir=config["trainer"]["output_dir"],
-    )
-    try:
-        mlflow.set_tracking_uri(config["mlflow_tracking_uri"])
-        mlflow.set_experiment(config["experiment_name"])
+    # Under distributed launch every rank runs this script; only the main
+    # process should touch the tracker. Training itself runs on all ranks.
+    is_main_process = trainer.is_world_process_zero()
 
-        with mlflow.start_run():
-            mlflow.log_params(_flatten_for_logging(config))
-            trainer.train()
-    except Exception as e:
-        print(f"MLflow logging failed: {e}")
-        print("Continuing with wandb logging only...")
+    if is_main_process:
+        wandb.init(
+            entity="quocdat32461997",
+            project=config["experiment_name"],
+            dir=config["trainer"]["output_dir"],
+            config=_flatten_for_logging(config),
+        )
+    try:
         trainer.train()
-        wandb.finish()
+    finally:
+        if is_main_process:
+            wandb.finish()
