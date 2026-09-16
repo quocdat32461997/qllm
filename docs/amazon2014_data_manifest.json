@@ -1,0 +1,122 @@
+{
+  "Beauty": {
+    "artifacts": {
+      "products.jsonl": "c23d2a9225b59461c1fb0f679a73f2e4cbf24ca5123550f3aed31bccbb962f00",
+      "test.jsonl": "a14395d4cd53e3d624838ccc4ce2a42e6debdfa24cb381140dee71a3871532fd",
+      "train.jsonl": "09ab135046b6bff512aac9bc9cf8a72f3628209c804ca615df7d406070e96e04",
+      "validation.jsonl": "5490cae92b1811f497187f47201ef9947b899c08dc1b2d44105264cc65ca6f66"
+    },
+    "catalog_scope": "all items in filtered interactions (transductive metadata only)",
+    "category": "Beauty",
+    "dataset": "amazon_2014",
+    "duplicate_policy": "preserve source events",
+    "duplicate_user_item_events": 0,
+    "interactions": 198502,
+    "items": 12101,
+    "max_history": 20,
+    "min_item": 5,
+    "min_user": 5,
+    "missing_titles": 7,
+    "protocol": "per-user timestamp order; final event test, penultimate validation; all earlier prefixes train",
+    "rating_filter": null,
+    "raw_interactions": 198502,
+    "schema_version": 1,
+    "sources": {
+      "metadata": {
+        "path": "data/amazon2014/raw/meta_Beauty.json.gz",
+        "sha256": "c7977dc0e0ead14ac7df8c1c6de74da00e4bebfad87a0f0c5763d4c5bc9b53a0"
+      },
+      "reviews": {
+        "path": "data/amazon2014/raw/reviews_Beauty_5.json.gz",
+        "sha256": "e5925ec99023f1dc9c7d3dff7ef34cfeacd40d1b981b5525e1e4ba9c8abc18fe"
+      }
+    },
+    "split_counts": {
+      "test": 22363,
+      "train": 131413,
+      "validation": 22363
+    },
+    "timestamp_ties": "original review row order",
+    "users": 22363
+  },
+  "Sports_and_Outdoors": {
+    "artifacts": {
+      "products.jsonl": "5860e20e72443acf051862c8d142d484a456e4f6eb87317d845b6d94b7cc761b",
+      "test.jsonl": "0588fd1236b7e00475b1112ec4e0706366010c3281b841d37ea8f06f2244c1cd",
+      "train.jsonl": "34ae22de5479e6a07396862ee3867ad387e4cb21c2bb71d8fa65ca7c496c9884",
+      "validation.jsonl": "ea7d58a408b041208c8cf7cbe02c91fe652c81e7d5fb55703d051b0916f3cc28"
+    },
+    "catalog_scope": "all items in filtered interactions (transductive metadata only)",
+    "category": "Sports_and_Outdoors",
+    "dataset": "amazon_2014",
+    "duplicate_policy": "preserve source events",
+    "duplicate_user_item_events": 0,
+    "interactions": 296337,
+    "items": 18357,
+    "max_history": 20,
+    "min_item": 5,
+    "min_user": 5,
+    "missing_titles": 90,
+    "protocol": "per-user timestamp order; final event test, penultimate validation; all earlier prefixes train",
+    "rating_filter": null,
+    "raw_interactions": 296337,
+    "schema_version": 1,
+    "sources": {
+      "metadata": {
+        "path": "data/amazon2014/raw/meta_Sports_and_Outdoors.json.gz",
+        "sha256": "677108a0fe0f47cce08885a348879a5a89dd69e75fbc5d66410ae436750df086"
+      },
+      "reviews": {
+        "path": "data/amazon2014/raw/reviews_Sports_and_Outdoors_5.json.gz",
+        "sha256": "8130a2206c3062db1b4b9d4353efc303b0ebd13f48372559fee26c47a1d7fe51"
+      }
+    },
+    "split_counts": {
+      "test": 35598,
+      "train": 189543,
+      "validation": 35598
+    },
+    "timestamp_ties": "original review row order",
+    "users": 35598
+  },
+  "Toys_and_Games": {
+    "artifacts": {
+      "products.jsonl": "5d3d53fffebaf7267cb6363dfb49fc36c72ad2e11b050d7dadedae8c6b39841a",
+      "test.jsonl": "4d2e2c2659e863eb7e1b8b41cb65ef9e502b2248da8c2d0dceb5b1d6f9ecc574",
+      "train.jsonl": "15284ecf792e0ab0e422d266bf230494a21a0159e3434d64cc125b0be2f5ab8c",
+      "validation.jsonl": "a71a48a0809067f7d061f9a34ca2ee3516f66db2742451fda7adaae068ee8ba0"
+    },
+    "catalog_scope": "all items in filtered interactions (transductive metadata only)",
+    "category": "Toys_and_Games",
+    "dataset": "amazon_2014",
+    "duplicate_policy": "preserve source events",
+    "duplicate_user_item_events": 0,
+    "interactions": 167597,
+    "items": 11924,
+    "max_history": 20,
+    "min_item": 5,
+    "min_user": 5,
+    "missing_titles": 59,
+    "protocol": "per-user timestamp order; final event test, penultimate validation; all earlier prefixes train",
+    "rating_filter": null,
+    "raw_interactions": 167597,
+    "schema_version": 1,
+    "sources": {
+      "metadata": {
+        "path": "data/amazon2014/raw/meta_Toys_and_Games.json.gz",
+        "sha256": "beffb81f3632050b28d8b0acb1ee27f0ddc2142e9a6abba293357a5312f5e876"
+      },
+      "reviews": {
+        "path": "data/amazon2014/raw/reviews_Toys_and_Games_5.json.gz",
+        "sha256": "f9f0cc56ad6b5de15a1b0dd1c07fcfc9e7367efc73481f5d94d8065f91149286"
+      }
+    },
+    "split_counts": {
+      "test": 19412,
+      "train": 109361,
+      "validation": 19412
+    },
+    "timestamp_ties": "original review row order",
+    "users": 19412
+  }
+}

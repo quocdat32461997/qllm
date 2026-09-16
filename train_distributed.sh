@@ -10,7 +10,7 @@
 # Usage:
 #   NUM_GPUS=4 CONFIG_PATH=configs_qwen8b.yaml bash train_distributed.sh
 
-set -e
+set -euo pipefail
 
 export PYTHONPATH="${PYTHONPATH:-$(pwd)}"
 export HF_HOME="${HF_HOME:-$(pwd)/.cache/huggingface}"
@@ -22,7 +22,7 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 CONFIG_PATH="${CONFIG_PATH:-configs_qwen8b.yaml}"
 
 # Default to every visible GPU on the node.
-if [ -z "${NUM_GPUS}" ]; then
+if [ -z "${NUM_GPUS:-}" ]; then
     if command -v nvidia-smi &> /dev/null; then
         NUM_GPUS="$(nvidia-smi -L | wc -l)"
     else
@@ -35,8 +35,8 @@ echo "Launching distributed training: ${NUM_GPUS} GPU(s), config=${CONFIG_PATH}"
 # torchrun works because the HF Trainer initializes DeepSpeed from the json
 # referenced by trainer.deepspeed. (`deepspeed --num_gpus=${NUM_GPUS} train.py`
 # is an equivalent alternative launcher.)
-torchrun \
+uv run --frozen --extra gpu python -m torch.distributed.run \
     --standalone \
     --nnodes=1 \
     --nproc_per_node="${NUM_GPUS}" \
-    train.py --config-path "${CONFIG_PATH}"
+    "${TRAIN_SCRIPT:-train.py}" --config-path "${CONFIG_PATH}" "$@"

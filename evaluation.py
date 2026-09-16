@@ -9,7 +9,7 @@ Tier 2 — semantic-ID quality / codebook health
     * codebook perplexity        exp(entropy) of the pooled code-usage dist
     * active / dead codes         coverage of the codebook_range alphabet
     * collision rate              fraction of items sharing an identical ID tuple
-    * uniqueness                  distinct ID tuples / items (inverse of collision)
+    * uniqueness                  distinct ID tuples / items
 
 Tier 3 — reconstruction fidelity
     * exact match / token-F1 / ROUGE-L between the product text reconstructed
@@ -262,78 +262,19 @@ def _build_eval_trainer(config: dict[str, Any], checkpoint: str | None):
       the embeddings resized to match training, then the adapter in
       ``checkpoint`` is attached.
     """
-    # Imported here so the metric utilities above stay import-light.
-    from peft import PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    from constants import (
-        BOS_SEMANTIC_SESSION,
-        BOS_SEMANTIC_TOKEN,
-        EOS_SEMANTIC_TOKEN,
-    )
+    from model_utils import load_checkpoint
     from trainers import QuanSFTTrainer, QuantConfig
-
-    use_lora = bool(config.get("use_lora"))
-    trainer_cfg = config["trainer"]
-    torch_dtype = torch.bfloat16 if trainer_cfg.get("bf16", False) else torch.float32
-
-    # For full-FT the checkpoint dir carries the resized tokenizer + weights.
-    tokenizer_src = config["model_name"]
-    if checkpoint and not use_lora:
-        tokenizer_src = checkpoint
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_src)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
-
-    model = AutoModelForCausalLM.from_pretrained(
-        checkpoint if (checkpoint and not use_lora) else config["model_name"],
-        torch_dtype=torch_dtype,
-        attn_implementation=trainer_cfg.get("attn_implementation", "sdpa"),
+    model, tokenizer = load_checkpoint(config, checkpoint)
+    args = QuantConfig(
+        output_dir=config["trainer"]["output_dir"], report_to=[],
+        use_cpu=config["trainer"].get("use_cpu", False),
+        bf16=config["trainer"].get("bf16", False),
+        codebook_size=config["codebook_size"], codebook_range=config["codebook_range"],
+        max_source_length=config["max_source_length"], max_target_length=config["max_target_length"],
+        generation_max_new_tokens=config.get("generation_max_new_tokens", 64),
+        generation_do_sample=config.get("generation_do_sample", False),
     )
-
-    # Ensure the semantic-ID tokens exist and the embedding table matches
-    # training (idempotent if the checkpoint already contains them).
-    codebook_tokens = [f"<|CODE_{i}|>" for i in range(config["codebook_range"])]
-    tokenizer.add_special_tokens(
-        {
-            "extra_special_tokens": [
-                BOS_SEMANTIC_TOKEN,
-                EOS_SEMANTIC_TOKEN,
-                BOS_SEMANTIC_SESSION,
-            ]
-            + codebook_tokens
-        }
-    )
-    model.resize_token_embeddings(len(tokenizer))
-
-    if use_lora and checkpoint:
-        model = PeftModel.from_pretrained(model, checkpoint)
-
-    trainer_args = QuantConfig(
-        output_dir=trainer_cfg["output_dir"],
-        per_device_eval_batch_size=trainer_cfg.get("per_device_eval_batch_size", 2),
-        report_to=[],
-        bf16=trainer_cfg.get("bf16", False),
-        seed=config.get("seed", 42),
-        codebook_size=config["codebook_size"],
-        codebook_range=config["codebook_range"],
-        max_source_length=config["max_source_length"],
-        max_target_length=config["max_target_length"],
-        generation_max_new_tokens=config.get("generation_max_new_tokens", 24),
-        generation_temperature=config.get("generation_temperature", 1.0),
-        generation_top_p=config.get("generation_top_p", 0.9),
-        temperature_initial=trainer_cfg.get("temperature_initial"),
-        temperature_final=trainer_cfg.get("temperature_final"),
-    )
-
-    trainer = QuanSFTTrainer(
-        model=model,
-        args=trainer_args,
-        tokenizer=tokenizer,
-        data_collator=QuantDataCollator(),
-    )
-    return trainer
+    return QuanSFTTrainer(model=model, args=args, tokenizer=tokenizer, data_collator=QuantDataCollator())
 
 
 def main() -> None:

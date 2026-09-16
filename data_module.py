@@ -1,16 +1,17 @@
 import random
 import re
+from pathlib import Path
 from collections import defaultdict
 from typing import Any
 
-from datasets import concatenate_datasets, load_dataset
+from datasets import Dataset as HFDataset, concatenate_datasets, load_dataset
 from torch.utils.data import Dataset
 
 from constants import BOS_SEMANTIC_TOKEN, EOS_SEMANTIC_TOKEN
 
 SYSTEM_PROMPT = (
     f"You are a marketing analyst who specializes in product categorization and feature extraction."
-    f"Semantic-IDs are {{codebook_size}} integers that each value ranges from <|CODE_0|> to <|CODE_{{codebook_range}}|>, separated by commands, "
+    f"Semantic-IDs are {{codebook_size}} code tokens ranging from <|CODE_0|> to <|CODE_{{codebook_range}}|>, concatenated "
     f"and placed between {BOS_SEMANTIC_TOKEN} and {EOS_SEMANTIC_TOKEN}."
 )
 
@@ -58,7 +59,7 @@ def extract_product_name(example: dict[str, Any]) -> str:
 
 def extract_product_features(example: dict[str, Any]) -> list[str]:
     feature_chunks = []
-    for key in ("features", "description", "details", "categories"):
+    for key in ("features", "description", "brand", "details", "categories"):
         value = _clean_text(_stringify(example.get(key)))
         if value:
             feature_chunks.append(value)
@@ -74,22 +75,16 @@ def extract_product_features(example: dict[str, Any]) -> list[str]:
 
 def build_product_text(
     product_name: str,
-    product_features: str,
+    product_features: list[str],
     include_features: bool,
     max_num_chars: int,
 ) -> str:
+    if max_num_chars is None or max_num_chars < 1:
+        raise ValueError("max_num_chars must be positive")
+    text = product_name
     if include_features and product_features:
-        max_num_chars -= len(f"{product_name}. Features: ")
-
-        feature_idx = 0
-        while (
-            feature_idx < len(product_features)
-            and max_num_chars - len(product_features[feature_idx]) > 0
-        ):
-            max_num_chars -= len(product_features[feature_idx]) + 1  # +1 for space
-            feature_idx += 1
-        return f"""{product_name}. Features: {" ".join(product_features[:feature_idx])}"""  # noqa
-    return product_name
+        text += ". Features: " + " ".join(product_features)
+    return text[:max_num_chars].rstrip()
 
 
 def format_semantic_ids(ids: list[int]) -> str:
@@ -138,6 +133,7 @@ class AmazonSemanticIdDataset(Dataset):
         max_num_chars: int,
         feature_probability: float = 0.5,
         seed: int = 42,
+        canonical_prompt: bool = False,
     ) -> None:
         self.records = records
         self.codebook_size = codebook_size
@@ -145,6 +141,7 @@ class AmazonSemanticIdDataset(Dataset):
         self.feature_probability = feature_probability
         self.seed = seed
         self.max_num_chars = max_num_chars
+        self.canonical_prompt = canonical_prompt
 
     def __len__(self) -> int:
         return len(self.records)
@@ -158,7 +155,7 @@ class AmazonSemanticIdDataset(Dataset):
         include_features = bool(product_features) and (
             rng.random() < self.feature_probability
         )
-        prompt_template = PROMPT_TEMPLATES[index % len(PROMPT_TEMPLATES)]
+        prompt_template = PROMPT_TEMPLATES[0 if self.canonical_prompt else index % len(PROMPT_TEMPLATES)]
         product_text = build_product_text(
             product_name=product_name,
             product_features=product_features,
@@ -171,7 +168,7 @@ class AmazonSemanticIdDataset(Dataset):
                     "role": "system",
                     "content": SYSTEM_PROMPT.format(
                         codebook_size=self.codebook_size,
-                        codebook_range=self.codebook_range,
+                        codebook_range=self.codebook_range - 1,
                     ),
                 },
                 {
@@ -190,7 +187,7 @@ class AmazonSemanticIdDataset(Dataset):
                     "role": "system",
                     "content": SYSTEM_PROMPT.format(
                         codebook_size=self.codebook_size,
-                        codebook_range=self.codebook_range,
+                        codebook_range=self.codebook_range - 1,
                     ),
                 },
                 {
@@ -207,6 +204,7 @@ class AmazonSemanticIdDataset(Dataset):
                 },
             ],
             "product_name": product_name,
+            "asin": example.get("asin", example.get("parent_asin")),
             "product_features": product_features,
         }
 
@@ -220,7 +218,14 @@ class QuantDataCollator:
         return dict(batch)
 
 
-def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
+def load_amazon_catalog(config: dict[str, Any]):
+    if str(config.get("dataset_version", "2023")) == "2014":
+        from amazon2014 import read_records, validate_prepared
+        directory = Path(config["data_dir"])
+        validate_prepared(directory)
+        return HFDataset.from_list(list(read_records(directory / "products.jsonl")))
+    if str(config.get("dataset_version", "2023")) != "2023":
+        raise ValueError("dataset_version must be 2014 or 2023")
     categories = config.get("categories")
     if not categories:
         categories = [config["category"]]
@@ -239,6 +244,11 @@ def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
         datasets[0] if len(datasets) == 1 else concatenate_datasets(datasets)
     )
 
+    return merged_dataset
+
+
+def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
+    merged_dataset = load_amazon_catalog(config)
     max_total_samples = config.get("max_total_samples")
     if max_total_samples:
         merged_dataset = merged_dataset.select(
@@ -256,7 +266,7 @@ def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
         "codebook_range": config["codebook_range"],
         "feature_probability": config.get("feature_probability", 0.5),
         "seed": config.get("seed", 42),
-        "max_num_chars": config.get("max_num_chars"),
+        "max_num_chars": config.get("max_num_chars", 600),
     }
     # train_records = [dict(row) for row in split_dataset["train"]]
     # eval_records = [dict(row) for row in split_dataset["test"]]
@@ -265,11 +275,11 @@ def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
 
     train_limit = config.get("max_train_samples")
     if train_limit:
-        train_records = train_records[:train_limit]
+        train_records = train_records.select(range(min(train_limit, len(train_records))))
 
-    eval_limit = config.get("max_eva, 1000l_samples")
+    eval_limit = config.get("max_eval_samples")
     if eval_limit:
-        eval_records = eval_records[:eval_limit]
+        eval_records = eval_records.select(range(min(eval_limit, len(eval_records))))
 
     return (
         AmazonSemanticIdDataset(train_records, **dataset_kwargs),

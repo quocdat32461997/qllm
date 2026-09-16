@@ -1,3 +1,5 @@
+> Amazon 2014 next-item recommendation is now implemented in `train_recommendation.py` and `evaluate_recommendation.py`. See [the run guide](docs/AMAZON2014.md). The broader retrieval and clustering experiments below remain proposals.
+
 # Evaluation Plan — Semantic-ID Quantization
 
 Evaluating a learned **semantic-ID tokenizer** (an LLM that maps product text to
@@ -65,7 +67,7 @@ fraction of codes used, semantically unrelated items mapped together).
 | `eval/active_codes` / `eval/dead_codes` | codes used ≥ 1× / never used | few dead codes |
 | `eval/active_code_ratio` | active / `codebook_range` | → 1.0 |
 | `eval/collision_rate` | fraction of items sharing an identical `codebook_size`-tuple | low |
-| `eval/uniqueness` | distinct ID tuples / items (inverse of collision) | high, → 1.0 |
+| `eval/uniqueness` | distinct ID tuples / items | high, → 1.0 |
 | `eval/num_unique_ids`, `eval/num_items` | bookkeeping | — |
 
 **Interpretation.**
@@ -163,7 +165,7 @@ outside this repo's current scope.
 | 1 — codebook health | perplexity, diversity, per-position | per batch (train) | ✅ |
 | 2 — ID quality | perplexity, dead codes, collision, uniqueness | per dataset (eval) | ✅ |
 | 3 — reconstruction | recon loss, EM / token-F1 / ROUGE-L | train loss + eval | ✅ |
-| 4 — downstream | Recall@K, NDCG@K, MRR | separate run | ⬜ planned |
+| 4 — next-item recommendation | Recall@5/10, NDCG@5/10 | separate run | Implemented; full GPU experiment pending |
 
 ## References
 

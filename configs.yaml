@@ -1,20 +1,15 @@
-experiment_name: "quan_semantic_ids"
-mlflow_tracking_uri: "http://localhost:5000"
-model_name: "HuggingFaceTB/SmolLM-135M-Instruct"
-
+experiment_name: amazon2014-semantic-recommendation
+model_name: HuggingFaceTB/SmolLM-135M-Instruct
 categories:
-  - "All_Beauty"
-  # - "Office_Products"
-  # - "Video_Games"
-  # - "Pet_Supplies"
-
+- Beauty
+- Sports_and_Outdoors
+- Toys_and_Games
 seed: 42
 eval_split_ratio: 0.02
-max_total_samples: null #5000
-max_train_samples: null #4096
-max_eval_samples: null #256
-data_num_workers: 4
-
+max_total_samples: null
+max_train_samples: null
+max_eval_samples: null
+data_num_workers: 0
 max_num_chars: 600
 codebook_size: 6
 codebook_range: 99
@@ -26,44 +21,73 @@ generation_temperature: 1.0
 generation_top_p: 0.9
 guessing_weight: 1.0
 reconstruction_weight: 1.0
-
-# Set true to train LoRA adapters (+ new codebook embeddings via
-# modules_to_save); false for full fine-tuning of all 8B params.
 use_lora: false
-
 trainer:
-  output_dir: "outputs/semantic_ids"
+  output_dir: outputs/amazon2014/smollm135m/Beauty/semantic
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4
-  learning_rate: 1.0e-4
+  learning_rate: 0.0001
   num_train_epochs: 1
   logging_steps: 1
   save_steps: 1000
   save_total_limit: 1
   eval_steps: 100
-  # warmup_ratio: 0.03
-  # warmup_steps: 200
   weight_decay: 0.01
-  lr_scheduler_type: "cosine"
+  lr_scheduler_type: cosine
   max_grad_norm: 1.0
   report_to: []
-  temperature_initial: 0.6
-  temperature_final: 1.0e-10
-  # --- Memory / distributed ---
-  bf16: true                        # half the resident weight footprint
-  gradient_checkpointing: true      # trade compute for activation memory
-  attn_implementation: "sdpa"       # memory-efficient attention (no extra dep)
-  # DeepSpeed ZeRO memory sharding. zero2.json is the safe default for the
-  # custom multi-forward compute_loss (params stay whole per rank). Use
-  # zero3.json only for full fine-tuning that still OOMs (see caveat in notes).
-  deepspeed: "ds_configs/zero2.json"
-
+  temperature_initial: 1.0
+  temperature_final: 0.1
+  bf16: true
+  gradient_checkpointing: true
+  attn_implementation: sdpa
+  deepspeed: null
 lora:
-  modules_to_save: ["embed_tokens", "lm_head"]
+  modules_to_save:
+  - embed_tokens
+  - lm_head
   r: 8
   lora_alpha: 16
-  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
   lora_dropout: 0.05
-  bias: "none"
-  task_type: "CAUSAL_LM"
+  bias: none
+  task_type: CAUSAL_LM
+  ensure_weight_tying: true
+dataset_version: '2014'
+data_dir: data/amazon2014/processed/Beauty
+output_root: outputs/amazon2014/smollm135m
+generation_do_sample: false
+recommendation:
+  max_history: 20
+  max_length: 1024
+  beam_size: 20
+  ks:
+  - 5
+  - 10
+  eval_batch_size: 4
+  trainer:
+    output_dir: outputs/amazon2014/smollm135m/Beauty/recommendation
+    per_device_train_batch_size: 4
+    per_device_eval_batch_size: 4
+    gradient_accumulation_steps: 4
+    learning_rate: 5.0e-05
+    num_train_epochs: 3
+    logging_steps: 50
+    save_strategy: epoch
+    eval_strategy: epoch
+    load_best_model_at_end: true
+    metric_for_best_model: eval_loss
+    greater_is_better: false
+    save_total_limit: 2
+    weight_decay: 0.01
+    lr_scheduler_type: cosine
+    warmup_ratio: 0.03
+    report_to: []
+    bf16: true
+    gradient_checkpointing: true
+    deepspeed: null

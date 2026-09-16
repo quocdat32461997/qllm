@@ -1,71 +1,21 @@
-qllm - Quantization with LLM
+# qllm: semantic IDs and generative recommendation
 
-## RunPod Deployment
+Train a shared causal language model to encode product metadata as discrete semantic IDs and reconstruct the product, then fine-tune that checkpoint for next-item recommendation.
 
-### Prerequisites
-- RunPod account with GPU access
-- Docker installed locally
-- Project files pushed to git repository
+The Amazon 2014 pipeline supports **Beauty**, **Sports and Outdoors**, and **Toys and Games**, following the category selection in TIGER. It includes chronological interaction splits, stable ASIN lookup with collision handling, and catalog-constrained Recall/NDCG evaluation.
 
-### Building and Pushing to RunPod
-
-1. **Build the Docker image locally:**
 ```bash
-docker build -t qllm-train:latest .
+uv sync --frozen                       # local CPU validation
+uv run --frozen python -m pytest -q
+uv run --frozen python run_amazon2014.py --dry-run
+
+# On a GPU host:
+uv sync --frozen --extra gpu
+uv run --frozen python run_amazon2014.py --download --categories Beauty
 ```
 
-2. **Tag for RunPod registry (optional):**
-```bash
-docker tag qllm-train:latest docker.io/your-username/qllm-train:latest
-docker push docker.io/your-username/qllm-train:latest
-```
+See [the Amazon 2014 guide](docs/AMAZON2014.md) for dataset research, protocol decisions, SmolLM/Qwen runs, LoRA, resume commands, evaluation, and limits. [Validation record](docs/VALIDATION.md).
 
-3. **Deploy on RunPod:**
-   - Go to RunPod dashboard
-   - Create new pod with GPU (recommend RTX 4000 Ada or higher)
-   - Select "Custom Docker Image"
-   - Use your built image or public registry image
-   - Set environment variables:
-     - `WANDB_API_KEY`: Your Weights & Biases API key
-     - `CONFIG_PATH`: Path to config file (default: configs.yaml)
-   - Set volume mapping for outputs: `/workspace/outputs` to persistent storage
-   - Start the pod
+Primary entry points: `amazon2014.py` (prepare), `train.py` (semantic training), `export_semantic_ids.py` (freeze the item index), `train_recommendation.py` (next-item fine-tuning), and `evaluate_recommendation.py` (ranking). `run_amazon2014.py` orchestrates separate category experiments. The older Amazon 2023 metadata loader remains available with `dataset_version: '2023'`.
 
-### Using RunPod CLI
-
-Alternatively, use RunPod CLI for automated deployment:
-```bash
-# Install RunPod CLI
-pip install runpod
-
-# Deploy training job
-runpodctl create gpu \
-  --name qllm-training \
-  --image qllm-train:latest \
-  --gpu-type RTX_4000_ADA \
-  --volume-size 50 \
-  --env WANDB_API_KEY=your_key_here
-```
-
-### Monitoring Training
-
-- **WandB**: View training metrics at https://wandb.ai/quocdat32461997
-- **MLflow**: If configured, access at `http://localhost:5000` (port forward required)
-- **Logs**: View pod logs in RunPod dashboard or via SSH
-
-### Retrieving Results
-
-After training completes:
-1. Download outputs from persistent volume
-2. Or use SCP to copy files:
-```bash
-scp -r user@pod-ip:/workspace/outputs ./outputs
-```
-
-### Configuration
-
-Modify `configs.yaml` before building to adjust:
-- Model selection
-- Training hyperparameters
-- LoRA settings
-- Data categories
+For RunPod, build the supplied Dockerfile and mount persistent storage for `/workspace/data`, `/workspace/outputs`, and `/workspace/.cache`. `CONFIG_PATH` chooses the model config, `NUM_GPUS` controls distributed training, and the container's startup script runs the complete pipeline. Tracking is optional and off by default.

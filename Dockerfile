@@ -1,4 +1,4 @@
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM nvidia/cuda:12.6.3-devel-ubuntu22.04
 
 # Set working directory
 WORKDIR /workspace
@@ -8,14 +8,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy project files
 COPY pyproject.toml uv.lock ./
-COPY train.py ./
-COPY trainers.py ./
-COPY data_module.py ./
-COPY constants.py ./
-COPY configs.yaml ./
+COPY README.md ./
 
 # Install dependencies using uv
-RUN uv sync --frozen
+RUN uv python install 3.12 && uv sync --frozen --extra gpu --no-dev --python 3.12
+COPY *.py *.yaml *.sh ./
+COPY ds_configs ./ds_configs
 
 # Install additional system dependencies if needed
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
@@ -31,4 +29,4 @@ RUN mkdir -p /workspace/.cache/huggingface
 EXPOSE 5000
 
 # Default command
-CMD ["uv", "run", "python", "train.py", "--config-path", "configs.yaml"]
+CMD ["bash", "runpod_train.sh", "--download"]
