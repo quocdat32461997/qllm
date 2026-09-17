@@ -37,7 +37,7 @@ names (e.g. `All_Beauty`).
 Learns to map product text to semantic IDs.
 
 ```bash
-python quan_train.py --config-path configs.yaml
+python train_quant.py --config-path configs.yaml
 ```
 
 ### Step 2 — Train the recommender
@@ -45,7 +45,7 @@ python quan_train.py --config-path configs.yaml
 Uses the semantic-ID representation from Step 1 for the recommendation task.
 
 ```bash
-python rec_train.py --config-path configs.yaml
+python train_rec.py --config-path configs.yaml
 ```
 
 ### Notes
