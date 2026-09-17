@@ -1,8 +1,12 @@
+import ast
+import gzip
+import os
 import random
 import re
 from collections import defaultdict
-from typing import Any
+from typing import Any, Iterator
 
+from datasets import Dataset as HFDataset
 from datasets import concatenate_datasets, load_dataset
 from torch.utils.data import Dataset
 
@@ -220,25 +224,22 @@ class QuantDataCollator:
         return dict(batch)
 
 
-def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
+def _resolve_categories(config: dict[str, Any]) -> list[str]:
     categories = config.get("categories")
     if not categories:
         categories = [config["category"]]
+    return categories
 
-    datasets = []
-    for category in categories:
-        dataset = load_dataset(
-            "McAuley-Lab/Amazon-Reviews-2023",
-            f"raw_meta_{category}",
-            split="full",
-            trust_remote_code=True,
-        )
-        datasets.append(dataset)
 
-    merged_dataset = (
-        datasets[0] if len(datasets) == 1 else concatenate_datasets(datasets)
-    )
+def _finalize_datasets(
+    merged_dataset: HFDataset, config: dict[str, Any]
+) -> tuple[Dataset, Dataset]:
+    """Shared tail for building train/eval datasets from a merged HF dataset.
 
+    Applies optional total-sample truncation, performs the train/test split, then
+    wraps each split in an ``AmazonSemanticIdDataset``. Reused by both the 2023 and
+    2014 loaders so the sampling/splitting behaviour stays identical across versions.
+    """
     max_total_samples = config.get("max_total_samples")
     if max_total_samples:
         merged_dataset = merged_dataset.select(
@@ -258,20 +259,149 @@ def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
         "seed": config.get("seed", 42),
         "max_num_chars": config.get("max_num_chars"),
     }
-    # train_records = [dict(row) for row in split_dataset["train"]]
-    # eval_records = [dict(row) for row in split_dataset["test"]]
     train_records = split_dataset["train"]
     eval_records = split_dataset["test"]
 
     train_limit = config.get("max_train_samples")
     if train_limit:
-        train_records = train_records[:train_limit]
+        train_records = train_records.select(
+            range(min(train_limit, len(train_records)))
+        )
 
-    eval_limit = config.get("max_eva, 1000l_samples")
+    eval_limit = config.get("max_eval_samples")
     if eval_limit:
-        eval_records = eval_records[:eval_limit]
+        eval_records = eval_records.select(range(min(eval_limit, len(eval_records))))
 
     return (
         AmazonSemanticIdDataset(train_records, **dataset_kwargs),
         AmazonSemanticIdDataset(eval_records, **dataset_kwargs),
     )
+
+
+def _flatten_amazon_2014_categories(categories: Any) -> list[str]:
+    """Flatten the 2014 nested ``categories`` (list of category paths) to strings.
+
+    The 2014 format stores categories as a list of paths, each path being a list of
+    increasingly specific labels, e.g. ``[["Sports & Outdoors", "Dance"], [...]]``.
+    Each path is collapsed into one string so the result is a flat ``list[str]`` with a
+    stable schema for Arrow.
+    """
+    paths: list[str] = []
+    entries = categories if isinstance(categories, (list, tuple)) else [categories]
+    for entry in entries:
+        text = _clean_text(_stringify(entry))
+        if text:
+            paths.append(text)
+    return paths
+
+
+def normalize_amazon_2014_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Map a raw Amazon 2014 product dict onto a fixed, extractor-friendly schema.
+
+    Raw 2014 records have ragged keys (many optional fields) and shapes that differ
+    from 2023 (single-string ``description``, nested ``categories``, ``brand`` instead
+    of ``store``). Normalizing to a constant set of keys/types gives ``Dataset`` a
+    stable schema and lets the shared ``extract_product_name`` /
+    ``extract_product_features`` helpers work unchanged (``brand`` is surfaced via the
+    ``details`` field they already read).
+    """
+    brand = _clean_text(_stringify(record.get("brand")))
+    return {
+        "asin": _stringify(record.get("asin")),
+        "title": _clean_text(_stringify(record.get("title"))),
+        "description": _clean_text(_stringify(record.get("description"))),
+        "categories": _flatten_amazon_2014_categories(record.get("categories")),
+        "details": f"Brand: {brand}" if brand else "",
+    }
+
+
+def _iter_amazon_2014_records(path: str) -> Iterator[dict[str, Any]]:
+    """Yield normalized product metadata dicts from a single Amazon 2014 gzip file.
+
+    The 2014 metadata files store one product per line as a Python-dict literal
+    (loose JSON with single quotes), so each line is parsed with ``ast.literal_eval``
+    rather than ``json.loads``. Malformed lines are skipped, and each parsed record is
+    passed through ``normalize_amazon_2014_record`` for a consistent schema.
+    """
+    with gzip.open(path, "rt", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = ast.literal_eval(line)
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(record, dict):
+                yield normalize_amazon_2014_record(record)
+
+
+def _load_amazon_2014_category(
+    data_dir: str, category: str, filename_template: str
+) -> HFDataset:
+    """Load one Amazon 2014 category into a HuggingFace ``Dataset``.
+
+    Materializing into an HF ``Dataset`` keeps the downstream pipeline
+    (``concatenate_datasets`` / ``train_test_split`` / ``select``) identical to the
+    2023 loader.
+    """
+    path = os.path.join(data_dir, filename_template.format(category=category))
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"Amazon 2014 metadata file not found for category '{category}': {path}. "
+            f"Download the per-category 'meta_<Category>.json.gz' file from "
+            f"https://jmcauley.ucsd.edu/data/amazon/index_2014.html into "
+            f"'{data_dir}' (or set 'amazon_2014_filename_template')."
+        )
+    return HFDataset.from_generator(
+        _iter_amazon_2014_records, gen_kwargs={"path": path}
+    )
+
+
+def build_amazon_2014_dataset(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
+    """Build train/eval datasets from local Amazon 2014 product metadata.
+
+    Unlike the 2023 dataset, the 2014 metadata is not a HuggingFace Hub config; it is
+    read from local per-category gzip files named ``meta_<Category>.json.gz`` (override
+    via ``amazon_2014_filename_template``) inside ``config['amazon_2014_dir']``.
+    """
+    categories = _resolve_categories(config)
+    data_dir = config["amazon_2014_dir"]
+    filename_template = config.get(
+        "amazon_2014_filename_template", "meta_{category}.json.gz"
+    )
+
+    datasets = [
+        _load_amazon_2014_category(data_dir, category, filename_template)
+        for category in categories
+    ]
+
+    merged_dataset = (
+        datasets[0] if len(datasets) == 1 else concatenate_datasets(datasets)
+    )
+
+    return _finalize_datasets(merged_dataset, config)
+
+
+def build_amazon_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset]:
+    dataset_version = str(config.get("dataset_version", 2023))
+    if dataset_version == "2014":
+        return build_amazon_2014_dataset(config)
+
+    categories = _resolve_categories(config)
+
+    datasets = []
+    for category in categories:
+        dataset = load_dataset(
+            "McAuley-Lab/Amazon-Reviews-2023",
+            f"raw_meta_{category}",
+            split="full",
+            trust_remote_code=True,
+        )
+        datasets.append(dataset)
+
+    merged_dataset = (
+        datasets[0] if len(datasets) == 1 else concatenate_datasets(datasets)
+    )
+
+    return _finalize_datasets(merged_dataset, config)

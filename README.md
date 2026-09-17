@@ -1,5 +1,61 @@
 qllm - Quantization with LLM
 
+## Training Pipeline
+
+Run the steps in order. All scripts read a YAML config via `--config-path` (default
+`configs.yaml`); edit that file to select the model, categories, and hyperparameters.
+
+### Step 0 — (Amazon 2014 only) Download the dataset
+
+The Amazon **2023** dataset is pulled automatically from the HuggingFace Hub, so you can
+skip this step for it. The Amazon **2014** dataset must be downloaded first, since it is
+distributed as local per-category `meta_<Category>.json.gz` files.
+
+```bash
+# Download metadata for the categories you want (see --list for valid names)
+python download_amazon_2014.py --out ./amazon2014_meta Beauty Digital_Music
+# ...or grab every known category:
+python download_amazon_2014.py --out ./amazon2014_meta --all
+```
+
+Then point `configs.yaml` at the downloaded folder and switch the loader to 2014:
+
+```yaml
+dataset_version: 2014
+amazon_2014_dir: "./amazon2014_meta"
+# amazon_2014_filename_template: "meta_{category}.json.gz"   # optional override
+categories:
+  - "Beauty"            # 2014 category names (same ones passed to the download script)
+  - "Digital_Music"
+```
+
+For the 2023 dataset, leave `dataset_version` unset (or `2023`) and use the 2023 category
+names (e.g. `All_Beauty`).
+
+### Step 1 — Train the quantizer (semantic-ID) model
+
+Learns to map product text to semantic IDs.
+
+```bash
+python quan_train.py --config-path configs.yaml
+```
+
+### Step 2 — Train the recommender
+
+Uses the semantic-ID representation from Step 1 for the recommendation task.
+
+```bash
+python rec_train.py --config-path configs.yaml
+```
+
+### Notes
+
+- Both training scripts share the same data loader (`data_module.build_amazon_datasets`),
+  so the dataset config from Step 0 applies to both.
+- For multi-GPU / large models (e.g. Qwen3-8B) use DeepSpeed ZeRO via the launcher:
+  `NUM_GPUS=4 CONFIG_PATH=configs_qwen8b.yaml bash train_distributed.sh`.
+- Evaluation utilities live in `quant_eval.py` / `evaluation.py`.
+
 ## RunPod Deployment
 
 ### Prerequisites

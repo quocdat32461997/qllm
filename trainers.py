@@ -641,11 +641,22 @@ class QuanSFTTrainer(Trainer):
                     f"Codebook embeds requires_grad: "
                     f"{codebook_embeds.requires_grad}"
                 )
-            # Append embeds of selected codebook tokens
-            tokenized_prompts["inputs_embeds"][
-                :, codebook_idx : codebook_idx + 1  # noqa
-            ] = codebook_embeds
-            # soft_embeddings.append(codebook_embeds)
+            # Append embeds of selected codebook tokens.
+            # Rebuild the tensor out-of-place instead of an in-place slice write:
+            # the write targets a slice disjoint from what each forward saved, but
+            # autograd tracks versions per-storage and conservatively rejects it on
+            # backward (fails on MPS/CPU; masked on CUDA by bf16 autocast copies).
+            # Reassigning to a fresh tensor sidesteps the version check and yields
+            # identical gradients on every backend.
+            ie = tokenized_prompts["inputs_embeds"]
+            tokenized_prompts["inputs_embeds"] = torch.cat(
+                [
+                    ie[:, :codebook_idx],
+                    codebook_embeds,
+                    ie[:, codebook_idx + 1 :],
+                ],
+                dim=1,
+            )
 
             # After each codebook iteration
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
