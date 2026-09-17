@@ -1,40 +1,65 @@
-experiment_name: "quan_semantic_ids"
-mlflow_tracking_uri: "http://localhost:5000"
-model_name: "gpt2"
-
+experiment_name: quan_semantic_ids
+mlflow_tracking_uri: http://localhost:5000
+model_name: HuggingFaceTB/SmolLM-135M-Instruct
 categories:
-  - "All_Beauty"
-  - "Office_Products"
-  - "Video_Games"
-  - "Pet_Supplies"
-
+  # - "All_Beauty"
+  # - "Office_Products"
+  # - "Video_Games"
+  # - "Pet_Supplies"
+- Beauty
+- Sports_and_Outdoors
+- Toys_and_Games
+amazon_2014_dir: ./amazon2014_meta
 seed: 42
 eval_split_ratio: 0.02
-max_total_samples: 5000
-max_train_samples: 4096
-max_eval_samples: 256
-
+max_total_samples: null
+max_train_samples: null
+max_eval_samples: null
+data_num_workers: 4
+max_num_chars: 600
 codebook_size: 6
-codebook_range: 128
+codebook_range: 99
 feature_probability: 0.5
-max_source_length: 256
-max_target_length: 96
-generation_max_new_tokens: 24
+max_source_length: 1000
+max_target_length: 1000
+generation_max_new_tokens: 256
 generation_temperature: 1.0
 generation_top_p: 0.9
 guessing_weight: 1.0
 reconstruction_weight: 1.0
-
+use_lora: false
 trainer:
-  output_dir: "outputs/semantic_ids"
-  per_device_train_batch_size: 2
+  output_dir: outputs/semantic_ids
+  per_device_train_batch_size: 1
   per_device_eval_batch_size: 2
-  gradient_accumulation_steps: 1
-  learning_rate: 5.0e-5
+  gradient_accumulation_steps: 4
+  learning_rate: 0.0001
   num_train_epochs: 1
-  logging_steps: 10
-  save_steps: 100
+  logging_steps: 1
+  save_steps: 1000
+  save_total_limit: 1
   eval_steps: 100
-  warmup_ratio: 0.03
   weight_decay: 0.01
+  lr_scheduler_type: cosine
+  max_grad_norm: 1.0
   report_to: []
+  temperature_initial: 0.6
+  temperature_final: 1.0e-10
+  bf16: false
+  gradient_checkpointing: true
+  attn_implementation: sdpa
+  deepspeed: null
+lora:
+  modules_to_save:
+  - embed_tokens
+  - lm_head
+  r: 8
+  lora_alpha: 16
+  target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  lora_dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
