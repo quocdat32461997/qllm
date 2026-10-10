@@ -1,33 +1,26 @@
 """
-Quantization eval for learned semantic-IDs — collapse + per-category codebook
-distribution.
+Intrinsic quantization evaluation for learned semantic-IDs — Tier-2.
 
-Two things this script answers that ``evaluation.py`` does not:
+Tier 2 — semantic-ID quality / codebook health, computed over the *test split*
+(dataset-level, not per-batch — perplexity/collision are nonlinear statistics of
+the full usage distribution, so they must be accumulated then reduced once):
+    * codebook perplexity        exp(entropy) of the pooled code-usage dist
+    * active / dead codes         coverage of the codebook_range alphabet
+    * collision rate              fraction of items sharing an identical ID tuple
+    * uniqueness                  distinct ID tuples / items (inverse of collision)
 
-1. **Semantic-ID collapse** — how many products share the *exact same* codebook
-   series (identical full code tuple). Reported globally and per category via
-   collision_rate / uniqueness plus a tuple-multiplicity histogram and the
-   most-shared tuples.
+Two modes, one CLI:
+  * default           Tier-2 summary over the whole (merged) test split from
+                      ``build_amazon_datasets`` → ``eval_metrics.json``.
+  * ``--by-category`` loads each category separately (keeping provenance) and
+                      additionally reports semantic-ID *collapse* (how many
+                      products share an identical code tuple) and the
+                      per-codebook-position code-value distribution, with PNG
+                      plots → ``quant_eval_metrics.json`` + ``*.png``.
 
-2. **Per-codebook product distribution, per category** — for ``All_Beauty``,
-   ``Sports_and_Outdoors`` and ``Toys_and_Games`` (overridable), both:
-     * per-position code-value histograms (does a codebook collapse / do
-       categories separate?), and
-     * full-tuple distribution (how many unique IDs each category occupies).
-
-``evaluation.py`` merges categories and drops the label, so this script loads
-each category separately (mirroring the same split logic/seed) to keep
-provenance, then reuses the model-loading and usage-metric machinery from
-``evaluation.py``.
-
-Usage:
-    python quant_eval.py --config-path configs.yaml \\
-        --checkpoint workspace/semantic_ids/checkpoint-1000
-
-Outputs (into --output-dir, default <trainer.output_dir>/quant_eval):
-    quant_eval_metrics.json     global + per-category metrics + collapse tables
-    codebook_pos_{i}_dist.png   grouped bar chart per codebook position
-    collision_histogram.png     tuple-multiplicity (collapse) histogram
+Tier-3 reconstruction fidelity lives in ``evaluate_rec.py`` (the recommendation
+evaluation), which reuses ``SemanticIdUsageEvaluator`` / ``_build_eval_trainer``
+from this module.
 """
 
 from __future__ import annotations
@@ -39,52 +32,11 @@ from collections import Counter
 from typing import Any
 
 import torch
-from datasets import load_dataset
 
 from data_module import AmazonSemanticIdDataset, QuantDataCollator
-from evaluation import SemanticIdUsageEvaluator, _build_eval_trainer
+from eval_utils import SemanticIdUsageEvaluator, _build_eval_trainer
 
 DEFAULT_CATEGORIES = ["All_Beauty", "Sports_and_Outdoors", "Toys_and_Games"]
-
-
-# --------------------------------------------------------------------------- #
-# Per-category dataset loading (keeps category provenance)
-# --------------------------------------------------------------------------- #
-def build_eval_datasets_by_category(
-    config: dict[str, Any],
-    categories: list[str],
-) -> dict[str, AmazonSemanticIdDataset]:
-    """
-    Load each category separately and return its eval split, mirroring the
-    split logic in ``data_module.build_amazon_datasets`` (same seed / ratio) so
-    the eval items match those the model was validated on during training.
-    """
-    dataset_kwargs = {
-        "codebook_size": config["codebook_size"],
-        "codebook_range": config["codebook_range"],
-        "feature_probability": config.get("feature_probability", 0.5),
-        "seed": config.get("seed", 42),
-        "max_num_chars": config.get("max_num_chars"),
-    }
-    split_ratio = config.get("eval_split_ratio", 0.02)
-    seed = config.get("seed", 42)
-    max_total_samples = config.get("max_total_samples")
-
-    datasets: dict[str, AmazonSemanticIdDataset] = {}
-    for category in categories:
-        raw = load_dataset(
-            "McAuley-Lab/Amazon-Reviews-2023",
-            f"raw_meta_{category}",
-            split="full",
-            trust_remote_code=True,
-        )
-        if max_total_samples:
-            raw = raw.select(range(min(max_total_samples, len(raw))))
-        split = raw.train_test_split(test_size=split_ratio, seed=seed)
-        datasets[category] = AmazonSemanticIdDataset(
-            split["test"], **dataset_kwargs
-        )
-    return datasets
 
 
 # --------------------------------------------------------------------------- #
@@ -123,7 +75,7 @@ class CategoryStats:
 
     def compute(self, top_shared: int = 20) -> dict[str, Any]:
         metrics = self.usage.compute()
-        # Strip the "eval/" prefix for readability in this script's report.
+        # Strip the "eval/" prefix for readability in this report.
         metrics = {k.replace("eval/", ""): v for k, v in metrics.items()}
 
         # Collapse: histogram of how many tuples are shared by N products.
@@ -155,8 +107,83 @@ class CategoryStats:
 
 
 # --------------------------------------------------------------------------- #
-# Generation over a category's full eval split
+# Whole-split driver — Tier 2 over the merged test split
 # --------------------------------------------------------------------------- #
+def evaluate_test_split(
+    trainer: Any,
+    eval_dataset: Any,
+    batch_size: int,
+    max_samples: int | None = None,
+) -> dict[str, float]:
+    """
+    Generate semantic IDs for the test split and compute the Tier-2 codebook
+    quality metrics. Returns the metrics dict.
+    """
+    collator = QuantDataCollator()
+    usage = SemanticIdUsageEvaluator(
+        codebook_token_ids=trainer.codebook_token_ids,
+        codebook_range=trainer.args.codebook_range,
+        codebook_size=trainer.args.codebook_size,
+    )
+
+    total = len(eval_dataset)
+    if max_samples is not None:
+        total = min(max_samples, total)
+
+    trainer.model.eval()
+    for start in range(0, total, batch_size):
+        items = [eval_dataset[i] for i in range(start, min(start + batch_size, total))]
+        batch = collator(items)
+
+        # Generate semantic IDs and accumulate codebook usage.
+        semantic_ids, _ = trainer.generate_semantic_ids(batch["guessing_prompt"])
+        usage.update(semantic_ids)
+
+    return usage.compute()
+
+
+# --------------------------------------------------------------------------- #
+# Per-category dataset loading (keeps category provenance)
+# --------------------------------------------------------------------------- #
+def build_eval_datasets_by_category(
+    config: dict[str, Any],
+    categories: list[str],
+) -> dict[str, AmazonSemanticIdDataset]:
+    """
+    Load each category separately and return its eval split, mirroring the
+    split logic in ``data_module.build_amazon_datasets`` (same seed / ratio) so
+    the eval items match those the model was validated on during training.
+    """
+    from datasets import load_dataset
+
+    dataset_kwargs = {
+        "codebook_size": config["codebook_size"],
+        "codebook_range": config["codebook_range"],
+        "feature_probability": config.get("feature_probability", 0.5),
+        "seed": config.get("seed", 42),
+        "max_num_chars": config.get("max_num_chars"),
+    }
+    split_ratio = config.get("eval_split_ratio", 0.02)
+    seed = config.get("seed", 42)
+    max_total_samples = config.get("max_total_samples")
+
+    datasets: dict[str, AmazonSemanticIdDataset] = {}
+    for category in categories:
+        raw = load_dataset(
+            "McAuley-Lab/Amazon-Reviews-2023",
+            f"raw_meta_{category}",
+            split="full",
+            trust_remote_code=True,
+        )
+        if max_total_samples:
+            raw = raw.select(range(min(max_total_samples, len(raw))))
+        split = raw.train_test_split(test_size=split_ratio, seed=seed)
+        datasets[category] = AmazonSemanticIdDataset(
+            split["test"], **dataset_kwargs
+        )
+    return datasets
+
+
 def run_category(
     trainer: Any,
     dataset: AmazonSemanticIdDataset,
@@ -238,61 +265,42 @@ def write_plots(
 
 
 # --------------------------------------------------------------------------- #
-# CLI driver
+# CLI
 # --------------------------------------------------------------------------- #
-def main() -> None:
-    import yaml
+def _run_whole_split(args, config, trainer, batch_size: int) -> None:
+    from data_module import build_amazon_datasets
 
-    parser = argparse.ArgumentParser(
-        description="Semantic-ID collapse + per-category codebook distribution."
-    )
-    parser.add_argument("--config-path", type=str, default="configs.yaml")
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default=None,
-        help="Trained checkpoint dir (full-FT save or LoRA adapter). "
-        "If omitted, the untrained base model is evaluated.",
-    )
-    parser.add_argument(
-        "--categories",
-        type=str,
-        nargs="+",
-        default=DEFAULT_CATEGORIES,
-        help="Amazon-Reviews-2023 raw_meta_<X> category config names.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default=None,
-        help="Where to write metrics JSON + PNGs "
-        "(default: <trainer.output_dir>/quant_eval).",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=None,
-        help="Generation batch size (default: per_device_eval_batch_size).",
-    )
-    parser.add_argument(
-        "--max-samples-per-category",
-        type=int,
-        default=None,
-        help="Cap products per category (default: entire eval split).",
-    )
-    args = parser.parse_args()
+    _, eval_dataset = build_amazon_datasets(config)
 
-    with open(args.config_path, "r", encoding="utf-8") as file_handle:
-        config = yaml.safe_load(file_handle)
+    max_samples = args.max_samples
+    if max_samples is None:
+        max_samples = config.get("max_eval_samples")
 
-    trainer = _build_eval_trainer(config, args.checkpoint)
+    metrics = evaluate_test_split(
+        trainer=trainer,
+        eval_dataset=eval_dataset,
+        batch_size=batch_size,
+        max_samples=max_samples,
+    )
+
+    print("Semantic-ID quantization (Tier-2) test-split evaluation:")
+    for key, value in metrics.items():
+        print(f"  {key}: {value}")
+
+    output_path = args.output or os.path.join(
+        config["trainer"]["output_dir"], "eval_metrics.json"
+    )
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(metrics, handle, indent=2)
+    print(f"Wrote metrics to {output_path}")
+
+
+def _run_by_category(args, config, trainer, batch_size: int) -> None:
     datasets = build_eval_datasets_by_category(config, args.categories)
 
     codebook_size = config["codebook_size"]
     codebook_range = config["codebook_range"]
-    batch_size = args.batch_size or config["trainer"].get(
-        "per_device_eval_batch_size", 2
-    )
     output_dir = args.output_dir or os.path.join(
         config["trainer"]["output_dir"], "quant_eval"
     )
@@ -360,6 +368,86 @@ def main() -> None:
 
     write_plots(per_category, global_metrics, codebook_size, codebook_range, output_dir)
     print(f"Wrote plots to {output_dir}")
+
+
+def main() -> None:
+    import yaml
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Intrinsic semantic-ID quantization eval (Tier-2). Default: summary "
+            "over the whole merged test split. With --by-category: per-category "
+            "collapse + codebook distribution + PNG plots."
+        )
+    )
+    parser.add_argument("--config-path", type=str, default="configs.yaml")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Trained checkpoint dir (full-FT save or LoRA adapter). "
+        "If omitted, the untrained base model is evaluated.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Generation batch size (default: per_device_eval_batch_size).",
+    )
+    parser.add_argument(
+        "--by-category",
+        action="store_true",
+        help="Run the per-category collapse + codebook-distribution analysis "
+        "(with PNG plots) instead of the whole-split Tier-2 summary.",
+    )
+    # Whole-split mode.
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="[whole-split] Cap the number of test items evaluated.",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="[whole-split] Metrics JSON path (default: <output_dir>/eval_metrics.json).",
+    )
+    # Per-category mode.
+    parser.add_argument(
+        "--categories",
+        type=str,
+        nargs="+",
+        default=DEFAULT_CATEGORIES,
+        help="[--by-category] Amazon-Reviews-2023 raw_meta_<X> category config names.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="[--by-category] Output dir for metrics JSON + PNGs "
+        "(default: <output_dir>/quant_eval).",
+    )
+    parser.add_argument(
+        "--max-samples-per-category",
+        type=int,
+        default=None,
+        help="[--by-category] Cap products per category (default: entire eval split).",
+    )
+    args = parser.parse_args()
+
+    with open(args.config_path, "r", encoding="utf-8") as file_handle:
+        config = yaml.safe_load(file_handle)
+
+    trainer = _build_eval_trainer(config, args.checkpoint)
+    batch_size = args.batch_size or config["trainer"].get(
+        "per_device_eval_batch_size", 2
+    )
+
+    if args.by_category:
+        _run_by_category(args, config, trainer, batch_size)
+    else:
+        _run_whole_split(args, config, trainer, batch_size)
 
 
 if __name__ == "__main__":
