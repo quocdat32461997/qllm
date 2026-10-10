@@ -10,6 +10,13 @@ categories:
 - Sports_and_Outdoors
 - Toys_and_Games
 amazon_2014_dir: ./amazon2014_meta
+# P5 sequential pipeline (build with: python preprocess_amazon_2014.py <categories>
+# --data-dir ./amazon2014_meta --out ./amazon2014_seq). When set, the Semantic-ID
+# metadata pipeline is restricted to the P5-filtered item set (aligned mode); set
+# amazon_2014_restrict_to_datamaps: false to use the full meta dump instead.
+# amazon_2014_sequential_dir: ./amazon2014_seq
+# amazon_2014_restrict_to_datamaps: true
+# dataset_mode: metadata   # or "sequential" to load per-user interaction sequences
 seed: 42
 eval_split_ratio: 0.02
 max_total_samples: null
