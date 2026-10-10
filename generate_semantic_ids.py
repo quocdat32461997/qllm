@@ -174,7 +174,7 @@ def load_generator(
     """Load config + rebuild the inference trainer. Returns ``(trainer, config)``."""
     import yaml
 
-    from evaluate_quant import _build_eval_trainer
+    from eval_utils import _build_eval_trainer
 
     with open(config_path, "r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle)

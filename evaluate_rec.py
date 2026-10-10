@@ -35,7 +35,7 @@ from typing import Any
 import torch
 
 from data_module import QuantDataCollator, build_amazon_datasets
-from evaluate_quant import SemanticIdUsageEvaluator, _build_eval_trainer
+from eval_utils import SemanticIdUsageEvaluator, _build_eval_trainer
 from generate_semantic_ids import code_token_to_index, semantic_ids_to_code_indices
 
 # Prefix the model is trained to emit before the reconstructed product text;
