@@ -28,18 +28,102 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+from collections import Counter
 from typing import Any
 
 import torch
 
 from data_module import QuantDataCollator, build_amazon_datasets
-from evaluation import (
-    SemanticIdUsageEvaluator,
-    _build_eval_trainer,
-    _reference_text,
-    reconstruction_text_metrics,
-)
+from evaluate_quant import SemanticIdUsageEvaluator, _build_eval_trainer
 from generate_semantic_ids import code_token_to_index, semantic_ids_to_code_indices
+
+# Prefix the model is trained to emit before the reconstructed product text;
+# stripped from both sides so metrics score the payload, not the boilerplate.
+_RECON_PREFIX = "The product name and/or its metadata are: "
+
+
+# --------------------------------------------------------------------------- #
+# Tier 3 — reconstruction fidelity (dependency-free text metrics)
+# --------------------------------------------------------------------------- #
+def _normalize(text: str) -> str:
+    text = text.strip()
+    if text.startswith(_RECON_PREFIX):
+        text = text[len(_RECON_PREFIX):]
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _tokens(text: str) -> list[str]:
+    return _normalize(text).split()
+
+
+def _token_f1(pred: str, ref: str) -> float:
+    pred_tokens, ref_tokens = _tokens(pred), _tokens(ref)
+    if not pred_tokens and not ref_tokens:
+        return 1.0
+    if not pred_tokens or not ref_tokens:
+        return 0.0
+    overlap = sum((Counter(pred_tokens) & Counter(ref_tokens)).values())
+    if overlap == 0:
+        return 0.0
+    precision = overlap / len(pred_tokens)
+    recall = overlap / len(ref_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def _lcs_length(a: list[str], b: list[str]) -> int:
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    for token_a in a:
+        curr = [0] * (len(b) + 1)
+        for j, token_b in enumerate(b, start=1):
+            if token_a == token_b:
+                curr[j] = prev[j - 1] + 1
+            else:
+                curr[j] = max(prev[j], curr[j - 1])
+        prev = curr
+    return prev[-1]
+
+
+def _rouge_l(pred: str, ref: str) -> float:
+    pred_tokens, ref_tokens = _tokens(pred), _tokens(ref)
+    if not pred_tokens and not ref_tokens:
+        return 1.0
+    if not pred_tokens or not ref_tokens:
+        return 0.0
+    lcs = _lcs_length(pred_tokens, ref_tokens)
+    if lcs == 0:
+        return 0.0
+    precision = lcs / len(pred_tokens)
+    recall = lcs / len(ref_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def reconstruction_text_metrics(
+    predictions: list[str],
+    references: list[str],
+) -> dict[str, float]:
+    if not predictions:
+        return {
+            "eval/recon_exact_match": 0.0,
+            "eval/recon_token_f1": 0.0,
+            "eval/recon_rouge_l": 0.0,
+        }
+    exact = [float(_normalize(p) == _normalize(r)) for p, r in zip(predictions, references)]
+    f1 = [_token_f1(p, r) for p, r in zip(predictions, references)]
+    rouge = [_rouge_l(p, r) for p, r in zip(predictions, references)]
+    n = len(predictions)
+    return {
+        "eval/recon_exact_match": sum(exact) / n,
+        "eval/recon_token_f1": sum(f1) / n,
+        "eval/recon_rouge_l": sum(rouge) / n,
+    }
+
+
+def _reference_text(reconstruction_prompt: list[dict[str, str]]) -> str:
+    """The reference product text is the assistant turn of the recon prompt."""
+    return reconstruction_prompt[-1]["content"]
 
 
 def evaluate_rec_test_split(

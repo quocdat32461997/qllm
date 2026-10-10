@@ -1,21 +1,17 @@
 """
-Intrinsic evaluation for learned semantic-ID quantization.
+Intrinsic quantization evaluation for learned semantic-IDs — Tier-2 only.
 
-Two tiers of metrics, computed over the *test split* (dataset-level, not
-per-batch — perplexity/collision are nonlinear statistics of the full usage
-distribution, so they must be accumulated then reduced once):
-
-Tier 2 — semantic-ID quality / codebook health
+Tier 2 — semantic-ID quality / codebook health, computed over the *test split*
+(dataset-level, not per-batch — perplexity/collision are nonlinear statistics of
+the full usage distribution, so they must be accumulated then reduced once):
     * codebook perplexity        exp(entropy) of the pooled code-usage dist
     * active / dead codes         coverage of the codebook_range alphabet
     * collision rate              fraction of items sharing an identical ID tuple
     * uniqueness                  distinct ID tuples / items (inverse of collision)
 
-Tier 3 — reconstruction fidelity
-    * exact match / token-F1 / ROUGE-L between the product text reconstructed
-      from the generated semantic IDs and the reference product text.
-
-All metrics are dependency-free (no `evaluate`, `sacrebleu`, `rouge_score`).
+Tier-3 reconstruction fidelity lives in ``evaluate_rec.py`` (the recommendation
+evaluation), which reuses ``SemanticIdUsageEvaluator`` / ``_build_eval_trainer``
+from this module.
 """
 
 from __future__ import annotations
@@ -23,17 +19,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 from collections import Counter
 from typing import Any
 
 import torch
 
 from data_module import QuantDataCollator
-
-# Prefix the model is trained to emit before the reconstructed product text;
-# stripped from both sides so metrics score the payload, not the boilerplate.
-_RECON_PREFIX = "The product name and/or its metadata are: "
 
 
 # --------------------------------------------------------------------------- #
@@ -111,104 +102,17 @@ class SemanticIdUsageEvaluator:
 
 
 # --------------------------------------------------------------------------- #
-# Tier 3 — reconstruction fidelity (dependency-free text metrics)
-# --------------------------------------------------------------------------- #
-def _normalize(text: str) -> str:
-    text = text.strip()
-    if text.startswith(_RECON_PREFIX):
-        text = text[len(_RECON_PREFIX):]
-    return re.sub(r"\s+", " ", text).strip().lower()
-
-
-def _tokens(text: str) -> list[str]:
-    return _normalize(text).split()
-
-
-def _token_f1(pred: str, ref: str) -> float:
-    pred_tokens, ref_tokens = _tokens(pred), _tokens(ref)
-    if not pred_tokens and not ref_tokens:
-        return 1.0
-    if not pred_tokens or not ref_tokens:
-        return 0.0
-    overlap = sum((Counter(pred_tokens) & Counter(ref_tokens)).values())
-    if overlap == 0:
-        return 0.0
-    precision = overlap / len(pred_tokens)
-    recall = overlap / len(ref_tokens)
-    return 2 * precision * recall / (precision + recall)
-
-
-def _lcs_length(a: list[str], b: list[str]) -> int:
-    if not a or not b:
-        return 0
-    prev = [0] * (len(b) + 1)
-    for token_a in a:
-        curr = [0] * (len(b) + 1)
-        for j, token_b in enumerate(b, start=1):
-            if token_a == token_b:
-                curr[j] = prev[j - 1] + 1
-            else:
-                curr[j] = max(prev[j], curr[j - 1])
-        prev = curr
-    return prev[-1]
-
-
-def _rouge_l(pred: str, ref: str) -> float:
-    pred_tokens, ref_tokens = _tokens(pred), _tokens(ref)
-    if not pred_tokens and not ref_tokens:
-        return 1.0
-    if not pred_tokens or not ref_tokens:
-        return 0.0
-    lcs = _lcs_length(pred_tokens, ref_tokens)
-    if lcs == 0:
-        return 0.0
-    precision = lcs / len(pred_tokens)
-    recall = lcs / len(ref_tokens)
-    return 2 * precision * recall / (precision + recall)
-
-
-def reconstruction_text_metrics(
-    predictions: list[str],
-    references: list[str],
-) -> dict[str, float]:
-    if not predictions:
-        return {
-            "eval/recon_exact_match": 0.0,
-            "eval/recon_token_f1": 0.0,
-            "eval/recon_rouge_l": 0.0,
-        }
-    exact = [float(_normalize(p) == _normalize(r)) for p, r in zip(predictions, references)]
-    f1 = [_token_f1(p, r) for p, r in zip(predictions, references)]
-    rouge = [_rouge_l(p, r) for p, r in zip(predictions, references)]
-    n = len(predictions)
-    return {
-        "eval/recon_exact_match": sum(exact) / n,
-        "eval/recon_token_f1": sum(f1) / n,
-        "eval/recon_rouge_l": sum(rouge) / n,
-    }
-
-
-def _reference_text(reconstruction_prompt: list[dict[str, str]]) -> str:
-    """The reference product text is the assistant turn of the recon prompt."""
-    return reconstruction_prompt[-1]["content"]
-
-
-# --------------------------------------------------------------------------- #
-# Driver — run Tier 2 + Tier 3 over the test split
+# Driver — run Tier 2 over the test split
 # --------------------------------------------------------------------------- #
 def evaluate_test_split(
     trainer: Any,
     eval_dataset: Any,
     batch_size: int,
     max_samples: int | None = None,
-    log_examples: int = 5,
-) -> tuple[dict[str, float], list[tuple[str, str]]]:
+) -> dict[str, float]:
     """
-    Generate semantic IDs + reconstructions for the test split and compute the
-    Tier-2 (codebook quality) and Tier-3 (reconstruction fidelity) metrics.
-
-    Returns ``(metrics, examples)`` where ``examples`` is a list of
-    ``(prediction, reference)`` pairs for qualitative inspection.
+    Generate semantic IDs for the test split and compute the Tier-2 codebook
+    quality metrics. Returns the metrics dict.
     """
     collator = QuantDataCollator()
     usage = SemanticIdUsageEvaluator(
@@ -216,9 +120,6 @@ def evaluate_test_split(
         codebook_range=trainer.args.codebook_range,
         codebook_size=trainer.args.codebook_size,
     )
-
-    predictions: list[str] = []
-    references: list[str] = []
 
     total = len(eval_dataset)
     if max_samples is not None:
@@ -229,24 +130,11 @@ def evaluate_test_split(
         items = [eval_dataset[i] for i in range(start, min(start + batch_size, total))]
         batch = collator(items)
 
-        # Tier 2: generate semantic IDs and accumulate usage.
+        # Generate semantic IDs and accumulate codebook usage.
         semantic_ids, _ = trainer.generate_semantic_ids(batch["guessing_prompt"])
         usage.update(semantic_ids)
 
-        # Tier 3: reconstruct product text from those IDs, collect pred/ref.
-        recon = trainer.reconstruct_from_semantic_ids(
-            batch["reconstruction_prompt"], semantic_ids
-        )
-        predictions.extend(recon)
-        references.extend(
-            _reference_text(p) for p in batch["reconstruction_prompt"]
-        )
-
-    metrics = usage.compute()
-    metrics.update(reconstruction_text_metrics(predictions, references))
-
-    examples = list(zip(predictions[:log_examples], references[:log_examples]))
-    return metrics, examples
+    return usage.compute()
 
 
 # --------------------------------------------------------------------------- #
@@ -376,18 +264,16 @@ def main() -> None:
     if max_samples is None:
         max_samples = config.get("max_eval_samples")
 
-    metrics, examples = evaluate_test_split(
+    metrics = evaluate_test_split(
         trainer=trainer,
         eval_dataset=eval_dataset,
         batch_size=config["trainer"].get("per_device_eval_batch_size", 2),
         max_samples=max_samples,
     )
 
-    print("Semantic-ID test-split evaluation:")
+    print("Semantic-ID quantization (Tier-2) test-split evaluation:")
     for key, value in metrics.items():
         print(f"  {key}: {value}")
-    for i, (pred, ref) in enumerate(examples):
-        print(f"  [example {i}] pred={pred!r} | ref={ref!r}")
 
     output_path = args.output or os.path.join(
         config["trainer"]["output_dir"], "eval_metrics.json"

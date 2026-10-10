@@ -2,7 +2,7 @@
 Quantization eval for learned semantic-IDs — collapse + per-category codebook
 distribution.
 
-Two things this script answers that ``evaluation.py`` does not:
+Two things this script answers that ``evaluate_quant.py`` does not:
 
 1. **Semantic-ID collapse** — how many products share the *exact same* codebook
    series (identical full code tuple). Reported globally and per category via
@@ -15,10 +15,10 @@ Two things this script answers that ``evaluation.py`` does not:
        categories separate?), and
      * full-tuple distribution (how many unique IDs each category occupies).
 
-``evaluation.py`` merges categories and drops the label, so this script loads
-each category separately (mirroring the same split logic/seed) to keep
+``evaluate_quant.py`` merges categories and drops the label, so this script
+loads each category separately (mirroring the same split logic/seed) to keep
 provenance, then reuses the model-loading and usage-metric machinery from
-``evaluation.py``.
+``evaluate_quant.py``.
 
 Usage:
     python quant_eval.py --config-path configs.yaml \\
@@ -42,7 +42,7 @@ import torch
 from datasets import load_dataset
 
 from data_module import AmazonSemanticIdDataset, QuantDataCollator
-from evaluation import SemanticIdUsageEvaluator, _build_eval_trainer
+from evaluate_quant import SemanticIdUsageEvaluator, _build_eval_trainer
 
 DEFAULT_CATEGORIES = ["All_Beauty", "Sports_and_Outdoors", "Toys_and_Games"]
 
