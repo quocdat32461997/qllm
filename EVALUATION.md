@@ -147,11 +147,17 @@ outside this repo's current scope.
 ## Running the evaluation
 
 ```bash
-# Tier 2 only (quantization / codebook quality), from a trained checkpoint
+# Tier 2 (quantization / codebook quality) over the merged test split
 .venv/bin/python evaluate_quant.py \
   --config-path configs_qwen8b.yaml \
   --checkpoint outputs/semantic_ids/checkpoint-1000 \
   --max-samples 500
+
+# Tier 2 per category + collapse/codebook-distribution + PNG plots
+.venv/bin/python evaluate_quant.py \
+  --config-path configs_qwen8b.yaml \
+  --checkpoint outputs/semantic_ids/checkpoint-1000 \
+  --by-category --categories All_Beauty Sports_and_Outdoors Toys_and_Games
 
 # Tier 2 + Tier 3 over the recommendation test split (also dumps the per-item
 # semantic-ID assignment corpus)
@@ -162,9 +168,11 @@ outside this repo's current scope.
 ```
 
 - Omit `--checkpoint` to score the untrained base model as a baseline.
-- `evaluate_quant.py` writes `eval_metrics.json` to `<output_dir>/` (override
-  with `--output`); `evaluate_rec.py` writes `rec_eval_metrics.json` +
-  `semantic_id_assignments.jsonl` to `<output_dir>/rec_eval/`.
+- `evaluate_quant.py` (default) writes `eval_metrics.json` to `<output_dir>/`
+  (override with `--output`); `--by-category` writes `quant_eval_metrics.json` +
+  `*.png` to `<output_dir>/quant_eval/`. `evaluate_rec.py` writes
+  `rec_eval_metrics.json` + `semantic_id_assignments.jsonl` to
+  `<output_dir>/rec_eval/`.
 - Tier 1 is emitted automatically during `train.py` (per-step wandb logs).
 
 ## Summary of status
