@@ -472,12 +472,25 @@ class QuanSFTTrainer(Trainer):
         Get the current temperature for sampling with annealing schedule.
         Temperature anneals from temperature_initial to temperature_final over
         the total training steps (max_steps).
+
+        At inference time (eval/generation) the annealing bookkeeping
+        (``current_gradient_accumulation_steps`` / ``state.max_steps``) is not
+        set up, so generation uses the fully-annealed final temperature — the
+        committed regime the schedule converges to.
         """
-        current_step = (
-            self.step_count // self.current_gradient_accumulation_steps
-        )  # noqa
+        grad_accum = getattr(self, "current_gradient_accumulation_steps", None)
+        state = getattr(self, "state", None)
+        max_steps = getattr(state, "max_steps", 0) if state is not None else 0
+
+        if not self.model.training or not grad_accum or not max_steps:
+            current_temp = self.args.temperature_final
+            if current_temp is None:
+                current_temp = 1.0
+            return torch.full_like(logits, current_temp, dtype=logits.dtype)
+
+        current_step = self.step_count // grad_accum
         progress = min(
-            current_step / self.state.max_steps,
+            current_step / max_steps,
             1.0,
         )
         current_temp = (
@@ -674,10 +687,10 @@ class QuanSFTTrainer(Trainer):
             :, bos_semantic_index + 1 :
         ]  # batch,  [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
 
-        # semantic_id_texts = self.tokenizer.batch_decode(
-        #     semantic_ids,
-        #     skip_special_tokens=False,
-        # )  # [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
+        semantic_id_texts = self.tokenizer.batch_decode(
+            semantic_ids,
+            skip_special_tokens=False,
+        )  # [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
 
         if self.model.training is True:
             soft_embeddings = tokenized_prompts["inputs_embeds"][
@@ -733,7 +746,7 @@ class QuanSFTTrainer(Trainer):
 
         return {
             "semantic_ids": semantic_ids,
-            # "semantic_id_texts": semantic_id_texts,
+            "semantic_id_texts": semantic_id_texts,
             "format_loss": format_loss,
             "soft_embeddings": soft_embeddings,
         }
