@@ -196,6 +196,20 @@ if __name__ == "__main__":
         )
     try:
         trainer.train()
+        # Persist the FINAL model + tokenizer (periodic checkpoints are capped by
+        # save_total_limit and may miss the last steps). Also dump the full run
+        # config next to the weights so the output dir is a self-contained,
+        # reloadable artifact.
+        if is_main_process:
+            output_dir = config["trainer"]["output_dir"]
+            trainer.save_model(output_dir)
+            tokenizer.save_pretrained(output_dir)
+            with open(
+                os.path.join(output_dir, "training_config.yaml"),
+                "w",
+                encoding="utf-8",
+            ) as config_out:
+                yaml.safe_dump(config, config_out, sort_keys=False)
     finally:
         if is_main_process:
             wandb.finish()
