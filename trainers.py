@@ -332,7 +332,9 @@ class QuanSFTTrainer(Trainer):
             start=1,
             end=self.args.codebook_size + 1,
             device=device,
-        ).repeat(len(gen_prompts), 1)  # [batch, codebook_size]
+        ).repeat(
+            len(gen_prompts), 1
+        )  # [batch, codebook_size]
         codes = semantic_ids[:, : self.args.codebook_size].to(device)
         tokenized["input_ids"] = tokenized["input_ids"].scatter(1, positions, codes)
 
@@ -671,8 +673,8 @@ class QuanSFTTrainer(Trainer):
 
         # Gumbel-softmax straight-through estimator
         semantic_ids = tokenized_prompts["input_ids"][
-            :, bos_semantic_index + 1 :
-        ]  # batch,  [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
+            :, bos_semantic_index + 1 : bos_semantic_index + 1 + self.args.codebook_size
+        ].clone()  # batch,  [<|bos_semantic|>, ...tokens..., <|eos_semantic|>]
 
         # semantic_id_texts = self.tokenizer.batch_decode(
         #     semantic_ids,
