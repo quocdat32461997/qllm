@@ -175,6 +175,9 @@ class QuanSFTTrainer(Trainer):
         per_position_perplexity = self._compute_per_position_perplexity(
             encode_outputs["semantic_ids"],
         )
+        uniqueness_score = self._compute_uniqueness_score(
+            encode_outputs["semantic_ids"],
+        )
         loss = (
             self.args.guessing_weight * encode_outputs["format_loss"]
             + self.args.reconstruction_weight * reconstruction_loss
@@ -187,6 +190,7 @@ class QuanSFTTrainer(Trainer):
                 "reconstruction_loss": reconstruction_loss.detach().item(),
                 "semantic_id_diversity": diversity_score,
                 "semantic_id_perplexity": perplexity_score,
+                "semantic_id_uniqueness": uniqueness_score,
                 **{
                     f"semantic_id_perplexity_pos_{pos}": ppl
                     for pos, ppl in enumerate(per_position_perplexity)
@@ -779,6 +783,39 @@ class QuanSFTTrainer(Trainer):
         num_unique = torch.unique(flat_ids).numel()
         active_codebook_ratio = num_unique / self.args.codebook_range
         return active_codebook_ratio
+
+    def _compute_uniqueness_score(self, semantic_ids: torch.Tensor) -> float:
+        """
+        Uniqueness measures how distinguishable products are within a batch.
+
+        Each product's semantic ID is the ``codebook_size``-tuple of codes. This
+        returns the fraction of products whose full tuple is distinct:
+
+            uniqueness = num_unique_tuples / batch_size
+
+        Ranges from ``1 / batch_size`` (every product collapses onto the same ID)
+        to ``1.0`` (every product gets a unique ID). Higher means products are
+        better distinguished; a low value is the direct signature of codebook
+        collapse (many products sharing one semantic ID). Unlike
+        ``_compute_diversity_score`` (which counts codes used) this counts whole
+        ID tuples, so it catches collapse even when individual code positions look
+        varied.
+
+        Input:
+            semantic_ids: torch.Tensor of shape (batch_size, seq_len). Only the
+                first ``codebook_size`` columns are generated code positions.
+        """
+        if semantic_ids is None:
+            return 0.0
+
+        # Each row is one product's codebook_size-tuple of codes.
+        tuples = semantic_ids[:, : self.args.codebook_size]
+        batch_size = tuples.shape[0]
+        if batch_size == 0:
+            return 0.0
+
+        num_unique_tuples = torch.unique(tuples, dim=0).shape[0]
+        return num_unique_tuples / batch_size
 
     def _perplexity_from_ids(
         self,
