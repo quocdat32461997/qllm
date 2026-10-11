@@ -3,11 +3,11 @@ import os
 from collections.abc import Mapping
 
 import torch
+import wandb
 import yaml
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import wandb
 from constants import BOS_SEMANTIC_SESSION, BOS_SEMANTIC_TOKEN, EOS_SEMANTIC_TOKEN
 from data_module import (
     QuantDataCollator,
@@ -81,20 +81,44 @@ if __name__ == "__main__":
     # Apply LoRA if configured. `modules_to_save` keeps the (resized) input
     # embeddings and lm_head fully trainable so the new codebook tokens can be
     # learned even though the rest of the backbone is frozen behind adapters.
-    if config.get("use_lora") and "lora" in config:
-        lora_config = LoraConfig(
-            r=config["lora"]["r"],
-            lora_alpha=config["lora"]["lora_alpha"],
-            target_modules=config["lora"]["target_modules"],
-            lora_dropout=config["lora"]["lora_dropout"],
-            bias=config["lora"]["bias"],
-            task_type=config["lora"]["task_type"],
-            modules_to_save=config["lora"].get(
-                "modules_to_save", ["embed_tokens", "lm_head"]
-            ),
-        )
-        model = get_peft_model(model, lora_config)
-        model.print_trainable_parameters()
+    # if config.get("use_lora") and "lora" in config:
+    #     lora_config = LoraConfig(
+    #         r=config["lora"]["r"],
+    #         lora_alpha=config["lora"]["lora_alpha"],
+    #         target_modules=config["lora"]["target_modules"],
+    #         lora_dropout=config["lora"]["lora_dropout"],
+    #         bias=config["lora"]["bias"],
+    #         task_type=config["lora"]["task_type"],
+    #         modules_to_save=config["lora"].get(
+    #             "modules_to_save", ["embed_tokens", "lm_head"]
+    #         ),
+    #     )
+    #     model = get_peft_model(model, lora_config)
+    #     model.print_trainable_parameters()
+
+    # Full fine-tune with a frozen backbone: train ONLY the input (embed_tokens)
+    # and output (lm_head) embeddings, so the newly added codebook token rows are
+    # learned while the transformer body stays fixed. (With tied embeddings these
+    # share one weight, so unfreezing the input also covers the output.)
+    for param in model.parameters():
+        param.requires_grad = False
+    for param in model.get_input_embeddings().parameters():
+        param.requires_grad = True
+    output_embeddings = model.get_output_embeddings()
+    if output_embeddings is not None:
+        for param in output_embeddings.parameters():
+            param.requires_grad = True
+    # Gradient checkpointing needs the embedding output to require grad so the
+    # frozen body's activations stay in the autograd graph.
+    if config["trainer"].get("gradient_checkpointing", False) and hasattr(
+        model, "enable_input_require_grads"
+    ):
+        model.enable_input_require_grads()
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"Trainable %: {100 * trainable_params / total_params:.2f}%")
 
     trainer_args = QuantConfig(
         output_dir=config["trainer"]["output_dir"],
