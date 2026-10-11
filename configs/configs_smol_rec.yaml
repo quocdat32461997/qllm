@@ -1,15 +1,25 @@
-experiment_name: quan_semantic_ids
+# Config for train_rec.py — sequential recommendation (per-user item sessions).
+#
+# train_rec.py uses the build_amazon_datasets wrapper; dataset_mode: sequential selects
+# the P5 per-user interaction sequences from amazon_2014_sequential_dir.
+#
+# NOTE: this is the TARGET setup. The current QuanSFTTrainer consumes Semantic-ID
+# prompts (guessing_prompt / reconstruction_prompt), not sequence records, so
+# train_rec.py will error until a session trainer/collator is wired (separate task).
+experiment_name: rec_semantic_ids
 mlflow_tracking_uri: http://localhost:5000
 model_name: HuggingFaceTB/SmolLM-135M-Instruct
 categories:
-  # - "All_Beauty"
-  # - "Office_Products"
-  # - "Video_Games"
-  # - "Pet_Supplies"
 - Beauty
 - Sports_and_Outdoors
 - Toys_and_Games
+# --- Amazon 2014 data ---
+dataset_version: 2014
+dataset_mode: sequential                 # per-user interaction sequences
+amazon_2014_sequential_dir: ./amazon2014_seq
+# The keys below are ignored in sequential mode (kept for easy switching to metadata).
 amazon_2014_dir: ./amazon2014_meta
+amazon_2014_restrict_to_datamaps: true
 seed: 42
 eval_split_ratio: 0.02
 max_total_samples: null
@@ -29,7 +39,7 @@ guessing_weight: 1.0
 reconstruction_weight: 1.0
 use_lora: false
 trainer:
-  output_dir: outputs/semantic_ids
+  output_dir: outputs/smol_rec
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4

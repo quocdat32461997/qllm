@@ -1,14 +1,18 @@
 #!/usr/bin/env python
-"""Download Amazon 2014 per-category product metadata files.
+"""Download Amazon 2014 per-category product metadata and 5-core review files.
 
 The Amazon 2014 dataset (McAuley, https://jmcauley.ucsd.edu/data/amazon/index_2014.html)
-ships product metadata as per-category gzip files named ``meta_<Category>.json.gz``,
-hosted on Stanford SNAP:
+ships two per-category gzip files, both hosted on Stanford SNAP:
 
-    https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/meta_<Category>.json.gz
+    .../categoryFiles/meta_<Category>.json.gz        (product metadata)
+    .../categoryFiles/reviews_<Category>_5.json.gz   (5-core user reviews)
 
-This downloads those files into a folder using the exact ``meta_{category}.json.gz``
-naming that ``data_module.build_amazon_2014_dataset`` expects, so you can then run with:
+The ``meta_*`` files feed the Semantic-ID pipeline
+(``data_module.build_amazon_2014_dataset``). The ``reviews_*_5`` files feed the
+P5-style sequential pipeline (``preprocess_amazon_2014.py``), which builds the user
+interaction sequences. By default both are downloaded, using the exact
+``meta_{category}.json.gz`` / ``reviews_{category}_5.json.gz`` naming those
+consumers expect, so you can then run with:
 
     dataset_version: 2014
     amazon_2014_dir: "<output dir>"
@@ -19,6 +23,8 @@ may return HTTP 403; the smaller categories download without auth.
 Usage:
     python download_amazon_2014.py --out ./amazon2014_meta Beauty Office_Products
     python download_amazon_2014.py --out ./amazon2014_meta --all
+    python download_amazon_2014.py --out ./amazon2014_meta --meta Beauty   # meta only
+    python download_amazon_2014.py --out ./amazon2014_meta --reviews Beauty # reviews only
     python download_amazon_2014.py --list
 """
 
@@ -29,7 +35,10 @@ import urllib.error
 import urllib.request
 
 BASE_URL = "https://snap.stanford.edu/data/amazon/productGraph/categoryFiles"
-FILENAME_TEMPLATE = "meta_{category}.json.gz"
+META_FILENAME_TEMPLATE = "meta_{category}.json.gz"
+REVIEWS_FILENAME_TEMPLATE = "reviews_{category}_5.json.gz"
+# Kept for backwards compatibility with importers of the old name.
+FILENAME_TEMPLATE = META_FILENAME_TEMPLATE
 
 # Known Amazon 2014 category names (used by --all / --list). Not exhaustive; you can
 # pass any valid category name as a positional argument.
@@ -73,9 +82,18 @@ def _human(num_bytes: int) -> str:
     return f"{size:.1f}TB"
 
 
-def download_category(category: str, out_dir: str, overwrite: bool = False) -> bool:
-    """Download one category's meta file. Returns True on success (or already present)."""
-    filename = FILENAME_TEMPLATE.format(category=category)
+def download_category(
+    category: str,
+    out_dir: str,
+    overwrite: bool = False,
+    filename_template: str = META_FILENAME_TEMPLATE,
+) -> bool:
+    """Download one category file. Returns True on success (or already present).
+
+    ``filename_template`` selects which file to fetch (``META_FILENAME_TEMPLATE`` or
+    ``REVIEWS_FILENAME_TEMPLATE``); both live under the same SNAP ``BASE_URL``.
+    """
+    filename = filename_template.format(category=category)
     url = f"{BASE_URL}/{filename}"
     dest = os.path.join(out_dir, filename)
 
@@ -130,6 +148,12 @@ def main() -> int:
     parser.add_argument("--all", action="store_true", help="Download all known categories")
     parser.add_argument("--overwrite", action="store_true", help="Re-download even if the file exists")
     parser.add_argument("--list", action="store_true", help="Print known category names and exit")
+    parser.add_argument("--meta", action="store_true", help="Download only meta_<Category>.json.gz")
+    parser.add_argument(
+        "--reviews",
+        action="store_true",
+        help="Download only reviews_<Category>_5.json.gz (default: download both)",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -140,10 +164,25 @@ def main() -> int:
     if not categories:
         parser.error("pass one or more category names, or --all (see --list)")
 
-    os.makedirs(args.out, exist_ok=True)
-    print(f"Downloading {len(categories)} category file(s) into {os.path.abspath(args.out)}\n")
+    # Default (neither flag) downloads both; --meta / --reviews narrow the selection.
+    templates = []
+    if args.meta or not args.reviews:
+        templates.append(META_FILENAME_TEMPLATE)
+    if args.reviews or not args.meta:
+        templates.append(REVIEWS_FILENAME_TEMPLATE)
 
-    failures = [c for c in categories if not download_category(c, args.out, args.overwrite)]
+    os.makedirs(args.out, exist_ok=True)
+    print(
+        f"Downloading {len(categories)} category x {len(templates)} file(s) "
+        f"into {os.path.abspath(args.out)}\n"
+    )
+
+    failures = [
+        f"{template.format(category=category)}"
+        for category in categories
+        for template in templates
+        if not download_category(category, args.out, args.overwrite, template)
+    ]
     print()
     if failures:
         print(f"Completed with {len(failures)} failure(s): {', '.join(failures)}", file=sys.stderr)
