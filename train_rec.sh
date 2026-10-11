@@ -1,0 +1,62 @@
+#!/bin/bash
+
+# RunPod entrypoint — sequential recommendation training (train_rec.py).
+#
+# Env setup -> optional dependency install -> ensure the Amazon 2014 data exists ->
+# launch train_rec.py (single- or multi-GPU). The _rec configs select the P5 per-user
+# interaction sequences (dataset_mode: sequential).
+#
+# NOTE: this is the TARGET entrypoint. The current QuanSFTTrainer consumes Semantic-ID
+# prompts, not sequence records, so train_rec.py will error until a session
+# trainer/collator is wired (separate task). The data pipeline itself is ready.
+#
+# Env overrides:
+#   CONFIG_PATH      yaml config (default: configs/configs_smol_rec.yaml)
+#                    set configs/configs_qwen8b_rec.yaml for the 8B multi-GPU run
+#   NUM_GPUS         GPUs to use (default: all visible; 1 -> plain python, >1 -> torchrun)
+#   SKIP_INSTALL     1 to skip `uv sync` (deps already present in the image/venv)
+#   SKIP_PREPROCESS  1 to skip the download+preprocess step (data already present)
+#   WANDB_MODE       e.g. offline to disable W&B uploads
+#
+# Usage:
+#   bash train_rec.sh
+#   CONFIG_PATH=configs/configs_qwen8b_rec.yaml NUM_GPUS=2 bash train_rec.sh
+
+set -e
+
+export PYTHONPATH="${PYTHONPATH:-$(pwd)}"
+export HF_HOME="${HF_HOME:-$(pwd)/.cache/huggingface}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+# Reduces fragmentation OOMs from the multi-forward compute_loss.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+mkdir -p "${HF_HOME}"
+
+CONFIG_PATH="${CONFIG_PATH:-configs/configs_smol_rec.yaml}"
+
+# 1. Dependencies. The torch/CUDA template already ships torch; `uv sync` adds the
+#    training libraries (transformers, trl, peft, datasets, ... + deepspeed via --extra
+#    gpu). Set SKIP_INSTALL=1 to reuse an environment that already has them.
+if command -v uv &> /dev/null; then
+    RUN=(uv run); [ "${SKIP_INSTALL:-0}" = "1" ] || uv sync --frozen --extra gpu
+else
+    RUN=()
+fi
+
+# 2. Data. preprocess.sh is idempotent (skips existing downloads/artifacts).
+if [ "${SKIP_PREPROCESS:-0}" != "1" ]; then
+    bash preprocess.sh
+fi
+
+# 3. Launch. Default to every visible GPU; ZeRO (trainer.deepspeed in the yaml) is
+#    driven by the HF Trainer under torchrun for the multi-GPU 8B configs.
+if [ -z "${NUM_GPUS}" ]; then
+    if command -v nvidia-smi &> /dev/null; then NUM_GPUS="$(nvidia-smi -L | wc -l | tr -d ' ')"; else NUM_GPUS=1; fi
+fi
+
+echo "train_rec: config=${CONFIG_PATH} gpus=${NUM_GPUS}"
+if [ "${NUM_GPUS}" -gt 1 ]; then
+    "${RUN[@]}" torchrun --standalone --nnodes=1 --nproc_per_node="${NUM_GPUS}" \
+        train_rec.py --config-path "${CONFIG_PATH}"
+else
+    "${RUN[@]}" python train_rec.py --config-path "${CONFIG_PATH}"
+fi
