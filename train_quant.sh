@@ -51,9 +51,8 @@ if [ -z "${NUM_GPUS}" ]; then
 fi
 
 echo "train_quant: config=${CONFIG_PATH} gpus=${NUM_GPUS}"
-if [ "${NUM_GPUS}" -gt 1 ]; then
-    "${RUN[@]}" torchrun --standalone --nnodes=1 --nproc_per_node="${NUM_GPUS}" \
-        train_quant.py --config-path "${CONFIG_PATH}"
-else
-    "${RUN[@]}" python train_quant.py --config-path "${CONFIG_PATH}"
-fi
+# Always launch via torchrun (even nproc_per_node=1) so the torch-distributed env
+# vars (RANK/WORLD_SIZE/LOCAL_RANK/MASTER_ADDR) are set. DeepSpeed then uses the
+# env:// backend instead of MPI auto-discovery, which would require mpi4py.
+"${RUN[@]}" torchrun --standalone --nnodes=1 --nproc_per_node="${NUM_GPUS}" \
+    train_quant.py --config-path "${CONFIG_PATH}"
