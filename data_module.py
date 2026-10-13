@@ -241,6 +241,11 @@ def _finalize_datasets(
     wraps each split in an ``AmazonSemanticIdDataset``. Reused by both the 2023 and
     2014 loaders so the sampling/splitting behaviour stays identical across versions.
     """
+    # Shuffle the merged dataset (across categories) before any truncation/split so
+    # the order isn't category-blocked (Beauty -> Sports -> Toys) and a capped
+    # ``max_total_samples`` run samples across all categories, not just the first one.
+    merged_dataset = merged_dataset.shuffle(seed=config.get("seed", 42))
+
     max_total_samples = config.get("max_total_samples")
     if max_total_samples:
         merged_dataset = merged_dataset.select(
