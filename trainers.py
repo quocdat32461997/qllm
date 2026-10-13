@@ -814,7 +814,10 @@ class QuanSFTTrainer(Trainer):
         if batch_size == 0:
             return 0.0
 
-        num_unique_tuples = torch.unique(tuples, dim=0).shape[0]
+        # ``torch.unique(..., dim=0)`` uses aten::unique_dim, which is not
+        # implemented on MPS; this is a logging-only metric (no gradient), so do
+        # the row-dedup on CPU to stay device-agnostic.
+        num_unique_tuples = torch.unique(tuples.detach().cpu(), dim=0).shape[0]
         return num_unique_tuples / batch_size
 
     def _perplexity_from_ids(

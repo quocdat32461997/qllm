@@ -36,7 +36,7 @@ import torch
 from data_module import AmazonSemanticIdDataset, QuantDataCollator
 from eval_utils import SemanticIdUsageEvaluator, _build_eval_trainer
 
-DEFAULT_CATEGORIES = ["All_Beauty", "Sports_and_Outdoors", "Toys_and_Games"]
+DEFAULT_CATEGORIES = ["Beauty", "Sports_and_Outdoors", "Toys_and_Games"]
 
 
 # --------------------------------------------------------------------------- #
@@ -150,37 +150,19 @@ def build_eval_datasets_by_category(
     categories: list[str],
 ) -> dict[str, AmazonSemanticIdDataset]:
     """
-    Load each category separately and return its eval split, mirroring the
-    split logic in ``data_module.build_amazon_datasets`` (same seed / ratio) so
-    the eval items match those the model was validated on during training.
+    Load each Amazon 2014 category's eval split via the same loader used for
+    training (``data_module.build_amazon_2014_dataset``), so the eval items match
+    those the model was validated on — same seed / split ratio, and the same
+    aligned (P5 ``datamaps``) item set when ``amazon_2014_sequential_dir`` is set.
     """
-    from datasets import load_dataset
-
-    dataset_kwargs = {
-        "codebook_size": config["codebook_size"],
-        "codebook_range": config["codebook_range"],
-        "feature_probability": config.get("feature_probability", 0.5),
-        "seed": config.get("seed", 42),
-        "max_num_chars": config.get("max_num_chars"),
-    }
-    split_ratio = config.get("eval_split_ratio", 0.02)
-    seed = config.get("seed", 42)
-    max_total_samples = config.get("max_total_samples")
+    from data_module import build_amazon_2014_dataset
 
     datasets: dict[str, AmazonSemanticIdDataset] = {}
     for category in categories:
-        raw = load_dataset(
-            "McAuley-Lab/Amazon-Reviews-2023",
-            f"raw_meta_{category}",
-            split="full",
-            trust_remote_code=True,
-        )
-        if max_total_samples:
-            raw = raw.select(range(min(max_total_samples, len(raw))))
-        split = raw.train_test_split(test_size=split_ratio, seed=seed)
-        datasets[category] = AmazonSemanticIdDataset(
-            split["test"], **dataset_kwargs
-        )
+        # Reuse the full 2014 loader per category (one category -> one id space).
+        cat_config = {**config, "categories": [category]}
+        _, eval_dataset = build_amazon_2014_dataset(cat_config)
+        datasets[category] = eval_dataset
     return datasets
 
 
@@ -419,7 +401,8 @@ def main() -> None:
         type=str,
         nargs="+",
         default=DEFAULT_CATEGORIES,
-        help="[--by-category] Amazon-Reviews-2023 raw_meta_<X> category config names.",
+        help="[--by-category] Amazon 2014 category names (meta_<X>.json.gz), "
+        "e.g. Beauty Sports_and_Outdoors Toys_and_Games.",
     )
     parser.add_argument(
         "--output-dir",

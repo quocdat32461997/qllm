@@ -146,34 +146,40 @@ outside this repo's current scope.
 
 ## Running the evaluation
 
+All evaluation runs on the **Amazon 2014** data (`configs/configs_*_quant.yaml`,
+`dataset_version: 2014`). Build the data first with `bash preprocess.sh` (and set
+`amazon_2014_sequential_dir` for the aligned P5 item set).
+
 ```bash
 # Tier 2 (quantization / codebook quality) over the merged test split
 .venv/bin/python evaluate_quant.py \
-  --config-path configs_qwen8b.yaml \
-  --checkpoint outputs/semantic_ids/checkpoint-1000 \
+  --config-path configs/configs_qwen8b_quant.yaml \
+  --checkpoint outputs/qwen8b_quant/checkpoint-1000 \
   --max-samples 500
 
 # Tier 2 per category + collapse/codebook-distribution + PNG plots
 .venv/bin/python evaluate_quant.py \
-  --config-path configs_qwen8b.yaml \
-  --checkpoint outputs/semantic_ids/checkpoint-1000 \
-  --by-category --categories All_Beauty Sports_and_Outdoors Toys_and_Games
+  --config-path configs/configs_qwen8b_quant.yaml \
+  --checkpoint outputs/qwen8b_quant/checkpoint-1000 \
+  --by-category --categories Beauty Sports_and_Outdoors Toys_and_Games
 
 # Tier 2 + Tier 3 over the recommendation test split (also dumps the per-item
 # semantic-ID assignment corpus)
 .venv/bin/python evaluate_rec.py \
-  --config-path configs_qwen8b.yaml \
-  --checkpoint outputs/semantic_ids/checkpoint-1000 \
+  --config-path configs/configs_qwen8b_rec.yaml \
+  --checkpoint outputs/qwen8b_quant/checkpoint-1000 \
   --max-samples 500
 ```
 
+- Swap in `configs/configs_smol_quant.yaml` + `outputs/smol_quant/...` for the
+  SmolLM runs.
 - Omit `--checkpoint` to score the untrained base model as a baseline.
 - `evaluate_quant.py` (default) writes `eval_metrics.json` to `<output_dir>/`
   (override with `--output`); `--by-category` writes `quant_eval_metrics.json` +
   `*.png` to `<output_dir>/quant_eval/`. `evaluate_rec.py` writes
   `rec_eval_metrics.json` + `semantic_id_assignments.jsonl` to
   `<output_dir>/rec_eval/`.
-- Tier 1 is emitted automatically during `train.py` (per-step wandb logs).
+- Tier 1 is emitted automatically during `train_quant.py` (per-step wandb logs).
 
 ## Summary of status
 
