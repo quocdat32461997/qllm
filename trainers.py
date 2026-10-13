@@ -521,6 +521,10 @@ class QuanSFTTrainer(Trainer):
         Iteratively generate codebooks and append them to the input sequence.
         """
         device = next(model.parameters()).device
+        # codebook_token_ids may be pinned to a stale device from __init__ (e.g. CPU,
+        # before DeepSpeed moved the model to GPU); use it on the live compute device
+        # to avoid index/embedding device mismatches during generation.
+        codebook_token_ids = self.codebook_token_ids.to(device)
 
         # Tokenize prompts and input
         tokenized_prompts = self.tokenizer.apply_chat_template(
@@ -573,10 +577,10 @@ class QuanSFTTrainer(Trainer):
 
             # Gumbel-softmax
             gumbel_noise = self._add_gumbel_noise(
-                codebook_logits[..., self.codebook_token_ids]
+                codebook_logits[..., codebook_token_ids]
             )  # [batch_size, 1, codebook_size]
             codebook_logits = (
-                codebook_logits[..., self.codebook_token_ids] + gumbel_noise
+                codebook_logits[..., codebook_token_ids] + gumbel_noise
             )  # [batch_size, 1, codebook_size]
 
             # soft update backpropagation
@@ -589,12 +593,12 @@ class QuanSFTTrainer(Trainer):
             next_best_codebook_idx = torch.argmax(
                 codebook_logits, dim=-1
             )  # [batch_size, 1]
-            next_best_codebook = self.codebook_token_ids[
+            next_best_codebook = codebook_token_ids[
                 next_best_codebook_idx
             ]  # [batch_size, 1]
             next_best_codebook_onehot = torch.nn.functional.one_hot(
                 next_best_codebook_idx,
-                num_classes=len(self.codebook_token_ids),
+                num_classes=len(codebook_token_ids),
             ).to(
                 dtype=codebook_logits.dtype,
             )  # [batch_size, 1, codebook_size]
@@ -621,7 +625,7 @@ class QuanSFTTrainer(Trainer):
             codebook_embeds = torch.matmul(
                 codebook_logits,  # [batch_size, 1, codebook_size]
                 model.get_input_embeddings()(
-                    self.codebook_token_ids.clone()
+                    codebook_token_ids.clone()
                 ),  # [codebook_size, hidden_size]
             )  # [batch_size, 1, hidden_size]
             # probs = (
@@ -651,7 +655,7 @@ class QuanSFTTrainer(Trainer):
                 # Codebook embeds sum: -1.085938 repeated for many times
                 print(
                     f"Codebook embeds sum: "
-                    f"{model.get_input_embeddings()(self.codebook_token_ids[0].clone()).sum().item():.6f}"
+                    f"{model.get_input_embeddings()(codebook_token_ids[0].clone()).sum().item():.6f}"
                 )
 
             # Debug: Check if gradients flow through embeddings
