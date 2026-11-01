@@ -63,7 +63,7 @@ trainer:
   # temperature_initial: 0.6
   # temperature_final: 1.0e-10
   # temperature_initial: 1.0  # unset = fixed temperature (temperature_final), Gumbel noise only
-  temperature_final: 0.6
+  temperature_final: 1.0
   # --- Memory / distributed ---
   bf16: false                       # fp32: without DeepSpeed, bf16 weights drop lr-sized updates
   gradient_checkpointing: true      # trade compute for activation memory
