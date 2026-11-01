@@ -42,13 +42,32 @@ class QuantConfig(TrainingArguments):
         default=1.0, metadata={"help": "Max gradient norm for clipping."}
     )
     remove_unused_columns: bool = field(default=False)
-    temperature_initial: float = field(
-        default=1.0,
-        metadata={"help": "Initial temperature for Gumbel-softmax annealing."},
+    temperature_initial: float | None = field(
+        default=None,
+        metadata={
+            "help": "Initial temperature for Gumbel-softmax annealing. If None, "
+            "temperature stays fixed at temperature_final and only the "
+            "Gumbel noise drives exploration."
+        },
     )
     temperature_final: float = field(
-        default=1e-10,
-        metadata={"help": "Final temperature for Gumbel-softmax annealing."},
+        default=1.0,
+        metadata={
+            "help": "Final temperature for Gumbel-softmax annealing; the fixed "
+            "temperature when temperature_initial is None."
+        },
+    )
+    commitment_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight of the commitment (VQ) loss."},
+    )
+    commitment_beta: float = field(
+        default=0.25,
+        metadata={"help": "Weight of the commitment term inside the VQ loss."},
+    )
+    commitment_distance: str = field(
+        default="cosine",
+        metadata={"help": "Distance for the commitment loss: cosine or mse."},
     )
     gradient_checkpointing: bool = field(
         default=False,
@@ -181,6 +200,7 @@ class QuanSFTTrainer(Trainer):
         loss = (
             self.args.guessing_weight * encode_outputs["format_loss"]
             + self.args.reconstruction_weight * reconstruction_loss
+            + self.args.commitment_weight * encode_outputs["commitment_loss"]
         )
         # loss.backward()
         # print("Semantic id texts", encode_outputs["semantic_id_texts"])
@@ -188,6 +208,7 @@ class QuanSFTTrainer(Trainer):
             {
                 "format_loss": encode_outputs["format_loss"].detach().item(),
                 "reconstruction_loss": reconstruction_loss.detach().item(),
+                "commitment_loss": encode_outputs["commitment_loss"].detach().item(),
                 "semantic_id_diversity": diversity_score,
                 "semantic_id_perplexity": perplexity_score,
                 "semantic_id_uniqueness": uniqueness_score,
@@ -217,6 +238,7 @@ class QuanSFTTrainer(Trainer):
                 "semantic_ids": encode_outputs["semantic_ids"],
                 "format_loss": encode_outputs["format_loss"].detach().item(),
                 "reconstruction_loss": reconstruction_loss.detach().item(),
+                "commitment_loss": encode_outputs["commitment_loss"].detach().item(),
                 "semantic_id_perplexity": perplexity_score,
                 "semantic_id_diversity": diversity_score,
                 **{
@@ -466,6 +488,20 @@ class QuanSFTTrainer(Trainer):
             attention_mask=tokenized_prompts["attention_mask"],
         ).loss
 
+    def _vq_distance(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """
+        Distance used by the commitment loss, computed in fp32.
+        cosine: mean(1 - cos(x, y)); mse: mean squared error.
+        """
+        x, y = x.float(), y.float()
+        if self.args.commitment_distance == "cosine":
+            return (1 - torch.nn.functional.cosine_similarity(x, y, dim=-1)).mean()
+        if self.args.commitment_distance == "mse":
+            return torch.nn.functional.mse_loss(x, y)
+        raise ValueError(
+            f"Unknown commitment_distance: {self.args.commitment_distance}"
+        )
+
     def _add_gumbel_noise(self, logits: torch.Tensor) -> torch.Tensor:
         """
         Add Gumbel noise to logits for diverse sampling.
@@ -483,7 +519,15 @@ class QuanSFTTrainer(Trainer):
         (``current_gradient_accumulation_steps`` / ``state.max_steps``) is not
         set up, so generation uses the fully-annealed final temperature — the
         committed regime the schedule converges to.
+
+        With ``temperature_initial`` unset (None), temperature stays fixed at
+        temperature_final and only the Gumbel noise drives exploration.
         """
+        if self.args.temperature_initial is None:
+            return torch.full_like(
+                logits, self.args.temperature_final, dtype=logits.dtype
+            )
+
         grad_accum = getattr(self, "current_gradient_accumulation_steps", None)
         state = getattr(self, "state", None)
         max_steps = getattr(state, "max_steps", 0) if state is not None else 0
@@ -559,19 +603,26 @@ class QuanSFTTrainer(Trainer):
             tokenized_prompts["input_ids"] == self.bos_semantic_token_id
         ).nonzero(as_tuple=True)[-1][-1]
 
+        commitment_losses = []
         for i in range(1, self.args.codebook_size + 1):
             codebook_idx = bos_semantic_index + i
             # Retrieve logits
-            codebook_logits = model(
+            outputs = model(
                 inputs_embeds=(
                     tokenized_prompts["inputs_embeds"][:, :codebook_idx]
                 ),  # noqa
                 attention_mask=tokenized_prompts["attention_mask"][
                     :, :codebook_idx
                 ],  # noqa
-            ).logits[
-                :, -1:
-            ]  # [batch_size, 1, vocab_size]
+                output_hidden_states=self.model.training,
+            )
+            codebook_logits = outputs.logits[:, -1:]  # [batch_size, 1, vocab_size]
+            # Hidden state that produced this position's code logits
+            if self.model.training:
+                selection_hidden = outputs.hidden_states[-1][
+                    :, -1:
+                ]  # [batch_size, 1, hidden_size]
+            del outputs
 
             # ---------------
 
@@ -608,6 +659,23 @@ class QuanSFTTrainer(Trainer):
                 + codebook_logits  # noqa
             )  # ensures no mismatch between training and inference
 
+            # Commitment (VQ) loss: pull the selected code vector and the hidden
+            # state that scored it toward each other. Code vectors come from the
+            # output embeddings, the space the code logits are computed in.
+            if self.model.training:
+                code_vectors = model.get_output_embeddings().weight[
+                    codebook_token_ids
+                ]  # [codebook_size, hidden_size]
+                quantized = torch.matmul(
+                    codebook_logits.to(code_vectors.dtype),
+                    code_vectors,
+                )  # [batch_size, 1, hidden_size]
+                commitment_losses.append(
+                    self._vq_distance(selection_hidden.detach(), quantized)
+                    + self.args.commitment_beta
+                    * self._vq_distance(selection_hidden, quantized.detach())
+                )
+
             # Get full-vocab onehot vector
             # next_best_codebook_onehot = torch.nn.functional.one_hot(
             #     next_best_codebook,
@@ -622,11 +690,16 @@ class QuanSFTTrainer(Trainer):
             ] = next_best_codebook
 
             # Apply Gumbel-softmax trick to allow gradient flow
+            codebook_token_embeds = model.get_input_embeddings()(
+                codebook_token_ids.clone()
+            )  # [codebook_size, hidden_size]
             codebook_embeds = torch.matmul(
-                codebook_logits,  # [batch_size, 1, codebook_size]
-                model.get_input_embeddings()(
-                    codebook_token_ids.clone()
-                ),  # [codebook_size, hidden_size]
+                # Without DeepSpeed, bf16 runs leave the straight-through weights
+                # in fp32; cast them to the embedding dtype for the matmul.
+                codebook_logits.to(
+                    codebook_token_embeds.dtype
+                ),  # [batch_size, 1, codebook_size]
+                codebook_token_embeds,
             )  # [batch_size, 1, hidden_size]
             # probs = (
             #     codebook_logits  # [batch_size, 1, vocab_size]
@@ -755,11 +828,16 @@ class QuanSFTTrainer(Trainer):
             format_loss = None
             soft_embeddings = None
 
+        commitment_loss = (
+            torch.stack(commitment_losses).mean() if commitment_losses else None
+        )
+
         return {
             "semantic_ids": semantic_ids,
             "semantic_id_texts": semantic_id_texts,
             "format_loss": format_loss,
             "soft_embeddings": soft_embeddings,
+            "commitment_loss": commitment_loss,
         }
 
     def _compute_diversity_score(self, semantic_ids: torch.Tensor) -> float:

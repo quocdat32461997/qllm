@@ -150,8 +150,12 @@ if __name__ == "__main__":
         guessing_weight=config.get("guessing_weight", 1.0),
         reconstruction_weight=config.get("reconstruction_weight", 1.0),
         max_grad_norm=config["trainer"].get("max_grad_norm", 1.0),
+        # Unset (None) keeps temperature fixed at temperature_final.
         temperature_initial=config["trainer"].get("temperature_initial"),
-        temperature_final=config["trainer"].get("temperature_final"),
+        temperature_final=config["trainer"].get("temperature_final", 1.0),
+        commitment_weight=config.get("commitment_weight", 1.0),
+        commitment_beta=config.get("commitment_beta", 0.25),
+        commitment_distance=config.get("commitment_distance", "cosine"),
         gradient_checkpointing=config["trainer"].get("gradient_checkpointing", False),
         # use_reentrant=False is required for our multi-forward compute_loss:
         # the codebook loop builds a graph across several sub-forwards.

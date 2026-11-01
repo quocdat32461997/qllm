@@ -60,7 +60,7 @@ trainer:
   lr_scheduler_type: "cosine"
   max_grad_norm: 1.0
   report_to: []
-  temperature_initial: 0.6
+  # temperature_initial: 0.6  # unset = fixed temperature (temperature_final), Gumbel noise only
   temperature_final: 1.0e-10
   # --- Memory / distributed ---
   bf16: true                        # half the resident weight footprint
