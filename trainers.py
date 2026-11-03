@@ -638,6 +638,10 @@ class QuanSFTTrainer(Trainer):
                 attention_mask=tokenized_prompts["attention_mask"][
                     :, :codebook_idx
                 ],  # noqa
+                # Only the last position's logits are used. Computing all of them
+                # costs a [batch, seq, vocab] tensor per code (and a same-sized
+                # gradient in backward), which runs out of memory on long batches.
+                logits_to_keep=1,
             ).logits[
                 :, -1:
             ]  # [batch_size, 1, vocab_size]
