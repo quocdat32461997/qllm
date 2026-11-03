@@ -47,7 +47,7 @@ trainer:
   output_dir: "outputs/qwen8b_quant"
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 8
   learning_rate: 1.0e-4
   num_train_epochs: 1
   logging_steps: 1
@@ -61,7 +61,7 @@ trainer:
   max_grad_norm: 1.0
   report_to: []
   # temperature_initial: 0.6  # unset = fixed temperature (temperature_final), Gumbel noise only
-  temperature_final: 1.0e-10
+  temperature_final: 1.0
   # --- Memory / distributed ---
   bf16: true                        # half the resident weight footprint
   gradient_checkpointing: true      # trade compute for activation memory
