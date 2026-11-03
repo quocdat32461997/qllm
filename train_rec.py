@@ -122,7 +122,7 @@ if __name__ == "__main__":
         generation_max_new_tokens=config.get("generation_max_new_tokens", 24),
         generation_temperature=config.get("generation_temperature", 1.0),
         generation_top_p=config.get("generation_top_p", 0.9),
-        guessing_weight=config.get("guessing_weight", 1.0),
+        guessing_weight=config.get("guessing_weight", 0.1),
         reconstruction_weight=config.get("reconstruction_weight", 1.0),
         max_grad_norm=config["trainer"].get("max_grad_norm", 1.0),
         temperature_initial=config["trainer"].get("temperature_initial"),

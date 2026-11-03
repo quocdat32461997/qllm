@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,7 +37,7 @@ class QuantConfig(TrainingArguments):
     generation_temperature: float = field(default=1.0)
     generation_top_p: float = field(default=0.9)
     generation_do_sample: bool = field(default=True)
-    guessing_weight: float = field(default=1.0)
+    guessing_weight: float = field(default=0.1)  # format-loss weight
     reconstruction_weight: float = field(default=1.0)
     max_grad_norm: float = field(
         default=1.0, metadata={"help": "Max gradient norm for clipping."}
@@ -57,9 +58,16 @@ class QuantConfig(TrainingArguments):
             "temperature when temperature_initial is None."
         },
     )
-    commitment_weight: float = field(
+    kl_weight: float = field(
         default=1.0,
-        metadata={"help": "Weight of the commitment (VQ) loss."},
+        metadata={
+            "help": "Weight of the KL between the batch-average code usage and a "
+            "uniform prior, per position (log K - H(p_bar))."
+        },
+    )
+    commitment_weight: float = field(
+        default=0.0,
+        metadata={"help": "Weight of the commitment (VQ) loss; 0 disables it."},
     )
     commitment_beta: float = field(
         default=0.25,
@@ -200,15 +208,28 @@ class QuanSFTTrainer(Trainer):
         loss = (
             self.args.guessing_weight * encode_outputs["format_loss"]
             + self.args.reconstruction_weight * reconstruction_loss
-            + self.args.commitment_weight * encode_outputs["commitment_loss"]
+            + self.args.kl_weight * encode_outputs["kl_loss"]
         )
+        extra_losses = {"kl_loss": encode_outputs["kl_loss"].detach().item()}
+        if encode_outputs["commitment_loss"] is not None:
+            loss = loss + (
+                self.args.commitment_weight * encode_outputs["commitment_loss"]
+            )
+            extra_losses["commitment_loss"] = (
+                encode_outputs["commitment_loss"].detach().item()
+            )
+        soft_perplexity = {
+            f"semantic_id_soft_perplexity_pos_{pos}": ppl
+            for pos, ppl in enumerate(encode_outputs["soft_perplexity"])
+        }
         # loss.backward()
         # print("Semantic id texts", encode_outputs["semantic_id_texts"])
         self.log(
             {
                 "format_loss": encode_outputs["format_loss"].detach().item(),
                 "reconstruction_loss": reconstruction_loss.detach().item(),
-                "commitment_loss": encode_outputs["commitment_loss"].detach().item(),
+                **extra_losses,
+                **soft_perplexity,
                 "semantic_id_diversity": diversity_score,
                 "semantic_id_perplexity": perplexity_score,
                 "semantic_id_uniqueness": uniqueness_score,
@@ -238,7 +259,8 @@ class QuanSFTTrainer(Trainer):
                 "semantic_ids": encode_outputs["semantic_ids"],
                 "format_loss": encode_outputs["format_loss"].detach().item(),
                 "reconstruction_loss": reconstruction_loss.detach().item(),
-                "commitment_loss": encode_outputs["commitment_loss"].detach().item(),
+                **extra_losses,
+                **soft_perplexity,
                 "semantic_id_perplexity": perplexity_score,
                 "semantic_id_diversity": diversity_score,
                 **{
@@ -604,25 +626,35 @@ class QuanSFTTrainer(Trainer):
         ).nonzero(as_tuple=True)[-1][-1]
 
         commitment_losses = []
+        kl_losses = []
+        soft_perplexity = []
         for i in range(1, self.args.codebook_size + 1):
             codebook_idx = bos_semantic_index + i
             # Retrieve logits
-            outputs = model(
+            codebook_logits = model(
                 inputs_embeds=(
                     tokenized_prompts["inputs_embeds"][:, :codebook_idx]
                 ),  # noqa
                 attention_mask=tokenized_prompts["attention_mask"][
                     :, :codebook_idx
                 ],  # noqa
-                output_hidden_states=self.model.training,
-            )
-            codebook_logits = outputs.logits[:, -1:]  # [batch_size, 1, vocab_size]
-            # Hidden state that produced this position's code logits
+            ).logits[
+                :, -1:
+            ]  # [batch_size, 1, vocab_size]
+
+            # KL between the batch-average code usage and a uniform prior,
+            # log K - H(p_bar). Uses the clean softmax over the code logits (no
+            # Gumbel noise, no temperature): the noise would make usage look more
+            # uniform than the model's actual preferences.
             if self.model.training:
-                selection_hidden = outputs.hidden_states[-1][
-                    :, -1:
-                ]  # [batch_size, 1, hidden_size]
-            del outputs
+                clean_probs = torch.nn.functional.softmax(
+                    codebook_logits[..., codebook_token_ids],
+                    dim=-1,
+                )  # [batch_size, 1, codebook_size]
+                p_bar = clean_probs.mean(dim=(0, 1))  # [codebook_size]
+                entropy = -(p_bar * p_bar.clamp_min(1e-12).log()).sum()
+                kl_losses.append(math.log(len(codebook_token_ids)) - entropy)
+                soft_perplexity.append(entropy.exp().item())
 
             # ---------------
 
@@ -635,7 +667,7 @@ class QuanSFTTrainer(Trainer):
             )  # [batch_size, 1, codebook_size]
 
             # soft update backpropagation
-            codebook_logits = torch.nn.functional.softmax(
+            gumbel_codebook_logits = torch.nn.functional.softmax(
                 codebook_logits / self._get_temperature(codebook_logits),
                 dim=-1,
             )  # [batch_size, 1, codebook_size]
@@ -655,26 +687,9 @@ class QuanSFTTrainer(Trainer):
             )  # [batch_size, 1, codebook_size]
             codebook_logits = (
                 next_best_codebook_onehot
-                - codebook_logits.detach()
-                + codebook_logits  # noqa
+                - gumbel_codebook_logits.detach()
+                + gumbel_codebook_logits  # noqa
             )  # ensures no mismatch between training and inference
-
-            # Commitment (VQ) loss: pull the selected code vector and the hidden
-            # state that scored it toward each other. Code vectors come from the
-            # output embeddings, the space the code logits are computed in.
-            if self.model.training:
-                code_vectors = model.get_output_embeddings().weight[
-                    codebook_token_ids
-                ]  # [codebook_size, hidden_size]
-                quantized = torch.matmul(
-                    codebook_logits.to(code_vectors.dtype),
-                    code_vectors,
-                )  # [batch_size, 1, hidden_size]
-                commitment_losses.append(
-                    self._vq_distance(selection_hidden.detach(), quantized)
-                    + self.args.commitment_beta
-                    * self._vq_distance(selection_hidden, quantized.detach())
-                )
 
             # Get full-vocab onehot vector
             # next_best_codebook_onehot = torch.nn.functional.one_hot(
@@ -690,16 +705,17 @@ class QuanSFTTrainer(Trainer):
             ] = next_best_codebook
 
             # Apply Gumbel-softmax trick to allow gradient flow
-            codebook_token_embeds = model.get_input_embeddings()(
+            input_codebook_token_embeds = model.get_input_embeddings().weight[
                 codebook_token_ids.clone()
-            )  # [codebook_size, hidden_size]
-            codebook_embeds = torch.matmul(
+            ]  # In small models, embeddings are tied. But untied in big models
+            # Selected codebook embeds
+            input_codebook_embeds = torch.matmul(
                 # Without DeepSpeed, bf16 runs leave the straight-through weights
                 # in fp32; cast them to the embedding dtype for the matmul.
                 codebook_logits.to(
-                    codebook_token_embeds.dtype
+                    input_codebook_token_embeds.dtype
                 ),  # [batch_size, 1, codebook_size]
-                codebook_token_embeds,
+                input_codebook_token_embeds,
             )  # [batch_size, 1, hidden_size]
             # probs = (
             #     codebook_logits  # [batch_size, 1, vocab_size]
@@ -723,6 +739,23 @@ class QuanSFTTrainer(Trainer):
             #     model.get_input_embeddings().weight,  # [vocab_size, hidden_size]
             # )  # [batch_size, 1, hidden_size]
 
+            # Commitment (VQ) loss: pull input-embeddings and output-embeddings together
+            # When apply STE, output and input codebooks are not updated. In other words, encoder and decoder phases
+            # Have no reason to stay close to input and output codebooks
+            if self.model.training and self.args.commitment_weight > 0:
+                output_codebook_token_embeds = model.get_output_embeddings().weight[
+                    codebook_token_ids
+                ]  # [codebook_size, hidden_size]
+                quantized = torch.matmul(
+                    codebook_logits.to(output_codebook_token_embeds.dtype),
+                    output_codebook_token_embeds,
+                )  # [batch_size, 1, hidden_size]
+                commitment_losses.append(
+                    self._vq_distance(input_codebook_embeds.detach(), quantized)
+                    + self.args.commitment_beta
+                    * self._vq_distance(input_codebook_embeds, quantized.detach())
+                )
+
             # Debug: Check embedding sum
             if i == 1 and self.model.training:
                 # Codebook embeds sum: -1.085938 repeated for many times
@@ -735,7 +768,7 @@ class QuanSFTTrainer(Trainer):
             if i == 1 and self.model.training:
                 print(
                     f"Codebook embeds requires_grad: "
-                    f"{codebook_embeds.requires_grad}"
+                    f"{input_codebook_embeds.requires_grad}"
                 )
             # Append embeds of selected codebook tokens.
             # Rebuild the tensor out-of-place instead of an in-place slice write:
@@ -748,7 +781,7 @@ class QuanSFTTrainer(Trainer):
             tokenized_prompts["inputs_embeds"] = torch.cat(
                 [
                     ie[:, :codebook_idx],
-                    codebook_embeds,
+                    input_codebook_embeds,
                     ie[:, codebook_idx + 1 :],
                 ],
                 dim=1,
@@ -831,6 +864,7 @@ class QuanSFTTrainer(Trainer):
         commitment_loss = (
             torch.stack(commitment_losses).mean() if commitment_losses else None
         )
+        kl_loss = torch.stack(kl_losses).mean() if kl_losses else None
 
         return {
             "semantic_ids": semantic_ids,
@@ -838,6 +872,8 @@ class QuanSFTTrainer(Trainer):
             "format_loss": format_loss,
             "soft_embeddings": soft_embeddings,
             "commitment_loss": commitment_loss,
+            "kl_loss": kl_loss,
+            "soft_perplexity": soft_perplexity,
         }
 
     def _compute_diversity_score(self, semantic_ids: torch.Tensor) -> float:

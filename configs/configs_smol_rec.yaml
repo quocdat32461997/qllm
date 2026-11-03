@@ -35,7 +35,7 @@ max_target_length: 1000
 generation_max_new_tokens: 256
 generation_temperature: 1.0
 generation_top_p: 0.9
-guessing_weight: 1.0
+guessing_weight: 0.1                # format loss: template tokens only, keep small
 reconstruction_weight: 1.0
 use_lora: false
 trainer:
