@@ -45,9 +45,9 @@ use_lora: false
 
 trainer:
   output_dir: "outputs/qwen8b_quant"
-  per_device_train_batch_size: 1
+  per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 2
   learning_rate: 1.0e-4
   num_train_epochs: 1
   logging_steps: 1
