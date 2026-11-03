@@ -1,3 +1,4 @@
+import collections
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -61,8 +62,9 @@ class QuantConfig(TrainingArguments):
     kl_weight: float = field(
         default=1.0,
         metadata={
-            "help": "Weight of the KL between the batch-average code usage and a "
-            "uniform prior, per position (log K - H(p_bar))."
+            "help": "Weight of the KL between the average code usage and a "
+            "uniform prior, per position (log K - H(p_bar)). p_bar averages the "
+            "last gradient_accumulation_steps micro-batches."
         },
     )
     commitment_weight: float = field(
@@ -95,6 +97,7 @@ class QuanSFTTrainer(Trainer):
         self.processing_class = tokenizer
         self.step_count = 0
         self._last_step = -1
+        self._kl_windows = None
 
         self.codebook_tokens = [
             f"<|CODE_{id}|>" for id in range(self.args.codebook_range)
@@ -510,6 +513,19 @@ class QuanSFTTrainer(Trainer):
             attention_mask=tokenized_prompts["attention_mask"],
         ).loss
 
+    def _kl_window(self, position: int) -> collections.deque:
+        """
+        Detached code-usage sums (and product counts) of the previous
+        gradient_accumulation_steps - 1 micro-batches for one code position.
+        """
+        if self._kl_windows is None:
+            maxlen = max(self.args.gradient_accumulation_steps - 1, 0)
+            self._kl_windows = [
+                collections.deque(maxlen=maxlen)
+                for _ in range(self.args.codebook_size)
+            ]
+        return self._kl_windows[position]
+
     def _vq_distance(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
         Distance used by the commitment loss, computed in fp32.
@@ -646,18 +662,32 @@ class QuanSFTTrainer(Trainer):
                 :, -1:
             ]  # [batch_size, 1, vocab_size]
 
-            # KL between the batch-average code usage and a uniform prior,
+            # KL between the average code usage and a uniform prior,
             # log K - H(p_bar). Uses the clean softmax over the code logits (no
             # Gumbel noise, no temperature): the noise would make usage look more
             # uniform than the model's actual preferences.
+            # p_bar averages micro_batch * gradient_accumulation_steps products:
+            # the current micro-batch (with gradient) plus the detached usage of
+            # the previous micro-batches, whose graphs are already freed.
             if self.model.training:
                 clean_probs = torch.nn.functional.softmax(
                     codebook_logits[..., codebook_token_ids],
                     dim=-1,
                 )  # [batch_size, 1, codebook_size]
-                p_bar = clean_probs.mean(dim=(0, 1))  # [codebook_size]
+                usage = clean_probs.float().sum(dim=(0, 1))  # [codebook_size]
+                count = clean_probs.shape[0] * clean_probs.shape[1]
+                window = self._kl_window(i - 1)
+                past_usage = sum((u for u, _ in window), torch.zeros_like(usage))
+                past_count = sum(c for _, c in window)
+                p_bar = (past_usage + usage) / (past_count + count)
+                window.append((usage.detach(), count))
                 entropy = -(p_bar * p_bar.clamp_min(1e-12).log()).sum()
-                kl_losses.append(math.log(len(codebook_token_ids)) - entropy)
+                kl = math.log(len(codebook_token_ids)) - entropy
+                # The current micro-batch is only count / (past_count + count) of
+                # p_bar, so scale its gradient back up (value unchanged): each
+                # micro-batch then gets the gradient of one KL over the window.
+                scale = (past_count + count) / count
+                kl_losses.append(kl + (scale - 1) * (kl - kl.detach()))
                 soft_perplexity.append(entropy.exp().item())
 
             # ---------------
