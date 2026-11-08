@@ -521,8 +521,7 @@ class QuanSFTTrainer(Trainer):
         if self._kl_windows is None:
             maxlen = max(self.args.gradient_accumulation_steps - 1, 0)
             self._kl_windows = [
-                collections.deque(maxlen=maxlen)
-                for _ in range(self.args.codebook_size)
+                collections.deque(maxlen=maxlen) for _ in range(self.args.codebook_size)
             ]
         return self._kl_windows[position]
 
